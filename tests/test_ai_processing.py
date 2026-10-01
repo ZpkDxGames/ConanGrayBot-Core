@@ -9,6 +9,7 @@ from backend import ai_providers, presentation
 from backend import bot as bot_module
 from backend import config as config_module
 from backend.config import get_settings
+from backend.discord_bot import ai_chat as ai_chat_module
 from backend.firebase_client import MemoryStore, merge_bot_config
 
 
@@ -478,8 +479,8 @@ class TalkinRoutingTests(unittest.IsolatedAsyncioTestCase):
             )
             return [SimpleNamespace(id=9000 + len(self.deliveries))]
 
-        self.ask_patch = patch.object(bot_module, "ask_ai", fake_ask)
-        self.send_patch = patch.object(bot_module, "send_styled_reply", fake_send)
+        self.ask_patch = patch.object(ai_chat_module, "ask_ai", fake_ask)
+        self.send_patch = patch.object(ai_chat_module, "send_styled_reply", fake_send)
         self.ask_patch.start()
         self.send_patch.start()
 

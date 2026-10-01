@@ -5,7 +5,6 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from backend import bot as bot_module
 from backend.bot import (
     ConanBot,
     TicTacToeView,
@@ -13,6 +12,8 @@ from backend.bot import (
     judge_guess_reply,
 )
 from backend.config import get_settings
+from backend.discord_bot import common as common_module
+from backend.discord_bot import games as games_module
 from backend.firebase_client import MemoryStore
 from backend.retention import expired
 from backend.state import TTLRegistry
@@ -55,7 +56,7 @@ async def test_ai_verdict_cannot_change_game_truth(
     monkeypatch, guess, verdict, expected
 ):
     monkeypatch.setattr(
-        bot_module, "ask_ai", AsyncMock(return_value=(verdict, "fixture"))
+        common_module, "ask_ai", AsyncMock(return_value=(verdict, "fixture"))
     )
     result, _ = await judge_guess_reply(
         {}, answer="Heather", aliases=[], user_guess=guess
@@ -157,7 +158,7 @@ async def test_global_and_no_sync_manifest_choices(monkeypatch):
 async def test_tictactoe_concurrent_moves_cannot_take_two_turns(monkeypatch):
     view = TicTacToeView(1, 2)
     monkeypatch.setattr(view, "finish_or_update", AsyncMock())
-    monkeypatch.setattr(bot_module, "send_interaction_feedback", AsyncMock())
+    monkeypatch.setattr(games_module, "send_interaction_feedback", AsyncMock())
     interaction = SimpleNamespace(
         user=SimpleNamespace(id=1), response=SimpleNamespace(defer=AsyncMock())
     )
