@@ -58,6 +58,9 @@ async def require_service(request: Request) -> str:
         raise HTTPException(401, "Invalid actor proof")
     if nonce in replays:
         raise HTTPException(401, "Actor proof replayed")
+    replays.prune()
+    if len(replays) >= replays.capacity:
+        raise HTTPException(429, "Actor proof capacity exceeded")
     replays[nonce] = True
     now = time.monotonic()
     recent = [v for v in rates.get(actor, []) if now - v < 60]

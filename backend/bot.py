@@ -1,5 +1,7 @@
 import asyncio
 import copy
+import hashlib
+import json
 import logging
 import mimetypes
 import os
@@ -29,6 +31,7 @@ from .presentation import (
     send_message_feedback,
     send_message_inline_media_card,
 )
+from .state import TTLRegistry
 from .weather import (
     OpenWeatherClient,
     WeatherError,
@@ -497,7 +500,9 @@ def deterministic_guess_match(answer: str, aliases: list[str], user_guess: str) 
     if guess in candidates:
         return True
     for candidate in candidates:
-        if len(candidate) >= 5 and (candidate in guess or guess in candidate):
+        if len(candidate) >= 5 and re.search(
+            r"(?:^| )" + re.escape(candidate) + r"(?: |$)", guess
+        ):
             return True
         if SequenceMatcher(None, candidate, guess).ratio() >= 0.84:
             return True
@@ -550,7 +555,10 @@ async def judge_guess_reply(
         verdict_match = re.search(r"\b(INCORRECT|CORRECT)\b", str(verdict).upper())
         token = verdict_match.group(1) if verdict_match else ""
         if token == "CORRECT":
-            return True, f"AI answer judge: {provider}"
+            return (
+                exact_or_fuzzy,
+                f"Deterministic title matching; AI review: {provider}",
+            )
         if token == "INCORRECT":
             # An exact normalized title always wins over an accidental model rejection.
             return (
@@ -610,18 +618,20 @@ class ConanBot(commands.Bot):
         self.command_sync_status = "pending"
         self.command_sync_error: str | None = None
         self.registered_command_names: list[str] = []
-        self.ai_cooldowns: dict[str, float] = {}
-        self.ai_session_locks: dict[str, asyncio.Lock] = {}
-        self.guessing_game_locks: dict[str, asyncio.Lock] = {}
+        self.ai_cooldowns: TTLRegistry[float] = TTLRegistry(1024, 86400)
+        self.ai_session_locks: TTLRegistry[asyncio.Lock] = TTLRegistry(1024, 3600)
+        self.guessing_game_locks: TTLRegistry[asyncio.Lock] = TTLRegistry(1024, 3600)
         self.presence_rotation_task: asyncio.Task[None] | None = None
         self.presence_rotation_generation = 0
         self.presence_rotation_index = 0
         self.presence_rotation_guild_id = ""
         self.presence_rotation_entry: dict[str, Any] | None = None
         self.spontaneous_chat_task: asyncio.Task[None] | None = None
-        self.talkin_last_activity: dict[str, float] = {}
-        self.talkin_last_spontaneous: dict[str, float] = {}
-        self.talkin_last_spontaneous_check: dict[str, float] = {}
+        self.talkin_last_activity: TTLRegistry[float] = TTLRegistry(1024, 86400)
+        self.talkin_last_spontaneous: TTLRegistry[float] = TTLRegistry(1024, 86400)
+        self.talkin_last_spontaneous_check: TTLRegistry[float] = TTLRegistry(
+            1024, 86400
+        )
         log.info(
             "Discord intents configured: message_content=%s, members=%s",
             intents.message_content,
@@ -631,7 +641,7 @@ class ConanBot(commands.Bot):
     async def setup_hook(self) -> None:
         try:
             await self.rebuild_application_commands(
-                self.settings.guild_id or None, sync=True
+                self.settings.guild_id or None, sync=True, force=False
             )
         except discord.Forbidden as exc:
             self.command_sync_status = "forbidden"
@@ -651,6 +661,7 @@ class ConanBot(commands.Bot):
         guild_id: int | str | None = None,
         *,
         sync: bool = True,
+        force: bool = True,
     ) -> list[str]:
         """Rebuild the Discord slash-command tree from dashboard enable states."""
         target_guild_id = str(guild_id or self.settings.guild_id or "global")
@@ -669,6 +680,20 @@ class ConanBot(commands.Bot):
         if not sync:
             return registered
 
+        manifest = json.dumps(
+            [command.to_dict(self.tree) for command in self.tree.get_commands()],
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+        digest = hashlib.sha256(manifest.encode()).hexdigest()
+        if (
+            not force
+            and await self.store.get_command_manifest(target_guild_id) == digest
+        ):
+            self.command_sync_status = "unchanged"
+            self.command_sync_error = None
+            self.registered_command_names = registered
+            return registered
         if guild_id or self.settings.guild_id:
             guild_object = discord.Object(id=int(guild_id or self.settings.guild_id))
             self.tree.clear_commands(guild=guild_object)
@@ -683,6 +708,7 @@ class ConanBot(commands.Bot):
             await self.tree.sync()
             log.info("Slash commands synced globally: %s", ", ".join(registered))
 
+        await self.store.set_command_manifest(target_guild_id, digest)
         self.command_sync_status = "ok"
         self.command_sync_error = None
         self.registered_command_names = registered
@@ -4047,6 +4073,7 @@ class TicTacToeView(discord.ui.View):
         self.games_config = self.config.get("games", {})
         self.turn = "X"
         self.board = [""] * 9
+        self.move_lock = asyncio.Lock()
         for index in range(9):
             self.add_item(TicTacToeButton(index))
 
@@ -4095,6 +4122,7 @@ class TicTacToeView(discord.ui.View):
     async def finish_or_update(self, interaction: discord.Interaction) -> None:
         winner = self.winner()
         if winner:
+            self.stop()
             self.disable_board()
             if winner == "draw":
                 outcome = "draw"
@@ -4155,6 +4183,14 @@ class TicTacToeButton(discord.ui.Button):
         self.index = index
 
     async def callback(self, interaction: discord.Interaction) -> None:
+        view = self.view
+        assert isinstance(view, TicTacToeView)
+        async with view.move_lock:
+            if view.is_finished():
+                return
+            await self._apply_move(interaction)
+
+    async def _apply_move(self, interaction: discord.Interaction) -> None:
         view = self.view
         assert isinstance(view, TicTacToeView)
         current = view.current_player_id()

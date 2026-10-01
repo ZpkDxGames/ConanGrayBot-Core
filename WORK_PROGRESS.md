@@ -20,3 +20,5 @@ Discord decomposition, pooled AI transport/circuit management, storage expiry an
 ## External stable-release blockers
 
 Verify deletion of the compromised Google key and provision replacement credentials; remove historical sensitive Git objects; restore authorized Vercel project access, Discord OAuth credentials/callback registration and Discloud runtime access. No stable release or runtime certification is claimed.
+
+2026-10-01 recovered checkpoint: rebuilt deterministic song-judging safeguards, serialized tic-tac-toe moves, bounded bot state, successful-only persisted command manifests with unchanged startup skip and forced manual sync, per-guild session retention deadlines/read expiry and native Firestore log TTL, deployment defaults, and fail-closed replay-registry capacity. Current source passes 105 tests plus six subtests and mypy (26 modules). This supersedes earlier local results for these changes only; overall coverage and release gates remain incomplete. Missing unuploaded work is listed in EXECUTION_RECOVERY.md.

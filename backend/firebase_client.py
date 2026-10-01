@@ -27,6 +27,7 @@ from .config import (
 )
 from .io import run_blocking
 from .logging import safe_payload
+from .retention import expired, expiry
 from .state import TTLRegistry
 
 log = logging.getLogger("conan.firebase")
@@ -40,10 +41,20 @@ def _session_doc_id(channel_id: str, branch_id: str) -> str:
     return f"{channel_id}--{branch_id}"
 
 
+def initial_config() -> dict[str, Any]:
+    config = copy.deepcopy(DEFAULT_BOT_CONFIG)
+    settings = get_settings()
+    config["ai"]["channelId"] = settings.ai_channel_id
+    config["ai"]["memoryRetentionDays"] = settings.memory_retention_days
+    config["games"]["allowedCategoryId"] = settings.allowed_category_id
+    return config
+
+
 class MemoryStore:
     def __init__(self) -> None:
         self._guilds: dict[str, dict[str, Any]] = {}
         self._config_lock = asyncio.Lock()
+        self._command_manifests: dict[str, str] = {}
         self._sessions: TTLRegistry[dict[str, Any]] = TTLRegistry(
             5000, get_settings().memory_retention_days * 86400
         )
@@ -59,10 +70,16 @@ class MemoryStore:
             5000, get_settings().memory_retention_days * 86400
         )
 
+    async def get_command_manifest(self, scope: str) -> str | None:
+        return self._command_manifests.get(scope)
+
+    async def set_command_manifest(self, scope: str, digest: str) -> None:
+        self._command_manifests[scope] = digest
+
     async def get_config(self, guild_id: str) -> dict[str, Any]:
         from .migrations import migrate_config
 
-        config = self._guilds.get(guild_id) or copy.deepcopy(DEFAULT_BOT_CONFIG)
+        config = self._guilds.get(guild_id) or initial_config()
         return migrate_config(config)
 
     async def set_config(
@@ -89,7 +106,7 @@ class MemoryStore:
         self, guild_id: str, channel_id: str, branch_id: str
     ) -> dict[str, Any]:
         row = self._sessions.get(_session_key(guild_id, channel_id, branch_id))
-        if not row:
+        if not row or expired(row):
             return {
                 "channelId": channel_id,
                 "branchId": branch_id,
@@ -112,6 +129,9 @@ class MemoryStore:
         message_ids: list[str] | None = None,
         make_active: bool = True,
     ) -> None:
+        deadline = expiry(
+            (await self.get_config(guild_id))["ai"]["memoryRetentionDays"]
+        )
         key = _session_key(guild_id, channel_id, branch_id)
         previous = self._sessions.get(key) or {}
         # Keep every participating user/bot message in the retained history mapped
@@ -142,6 +162,7 @@ class MemoryStore:
             "rootMessageId": resolved_root,
             "messageIds": sorted(ref_ids),
             "updatedAt": datetime.now(timezone.utc).isoformat(),
+            "expiresAt": deadline.isoformat(),
         }
         self._sessions[key] = row
         for message_id in ref_ids:
@@ -152,10 +173,20 @@ class MemoryStore:
     async def resolve_reply_branch(
         self, guild_id: str, channel_id: str, message_id: str
     ) -> str | None:
-        return self._branch_refs.get(f"{guild_id}:{channel_id}:{message_id}")
+        branch = self._branch_refs.get(f"{guild_id}:{channel_id}:{message_id}")
+        if branch and expired(
+            self._sessions.get(_session_key(guild_id, channel_id, branch)) or {}
+        ):
+            return None
+        return branch
 
     async def get_active_branch(self, guild_id: str, channel_id: str) -> str | None:
-        return self._active_branches.get(f"{guild_id}:{channel_id}")
+        branch = self._active_branches.get(f"{guild_id}:{channel_id}")
+        if branch and expired(
+            self._sessions.get(_session_key(guild_id, channel_id, branch)) or {}
+        ):
+            return None
+        return branch
 
     async def set_active_branch(
         self, guild_id: str, channel_id: str, branch_id: str
@@ -348,14 +379,29 @@ class FirestoreStore:
     def __init__(self, client: Any) -> None:
         self.client = client
 
+    async def get_command_manifest(self, scope: str) -> str | None:
+        def work():
+            snap = self.client.collection("command_manifests").document(scope).get()
+            return (snap.to_dict() or {}).get("digest") if snap.exists else None
+
+        return await run_blocking(work)
+
+    async def set_command_manifest(self, scope: str, digest: str) -> None:
+        await run_blocking(
+            lambda: (
+                self.client.collection("command_manifests")
+                .document(scope)
+                .set({"digest": digest, "updatedAt": _server_timestamp()}, merge=False)
+            )
+        )
+
     async def get_config(self, guild_id: str) -> dict[str, Any]:
         from .migrations import migrate_config
 
         def work() -> dict[str, Any]:
             snap = self.client.collection("guilds").document(guild_id).get()
             return migrate_config(
-                (snap.to_dict() or {}).get("config")
-                or copy.deepcopy(DEFAULT_BOT_CONFIG)
+                (snap.to_dict() or {}).get("config") or initial_config()
             )
 
         return await run_blocking(work)
@@ -378,8 +424,7 @@ class FirestoreStore:
             def update(tx):
                 snap = ref.get(transaction=tx)
                 current = migrate_config(
-                    (snap.to_dict() or {}).get("config")
-                    or copy.deepcopy(DEFAULT_BOT_CONFIG)
+                    (snap.to_dict() or {}).get("config") or initial_config()
                 )
                 if (
                     expected_revision is not None
@@ -441,6 +486,15 @@ class FirestoreStore:
                     "messageIds": [],
                 }
             data = snap.to_dict() or {}
+            if expired(data):
+                return {
+                    "channelId": channel_id,
+                    "branchId": branch_id,
+                    "messages": [],
+                    "latestBotMessageId": "",
+                    "rootMessageId": "",
+                    "messageIds": [],
+                }
             return {
                 "channelId": str(data.get("channelId") or channel_id),
                 "branchId": str(data.get("branchId") or branch_id),
@@ -466,6 +520,10 @@ class FirestoreStore:
         message_ids: list[str] | None = None,
         make_active: bool = True,
     ) -> None:
+        deadline = expiry(
+            (await self.get_config(guild_id))["ai"]["memoryRetentionDays"]
+        )
+
         def work() -> None:
             session_ref = self._sessions_collection(guild_id).document(
                 _session_doc_id(channel_id, branch_id)
@@ -500,6 +558,7 @@ class FirestoreStore:
                     "rootMessageId": resolved_root,
                     "messageIds": sorted(ref_ids),
                     "updatedAt": _server_timestamp(),
+                    "expiresAt": deadline,
                 },
                 merge=False,
             )
@@ -511,6 +570,7 @@ class FirestoreStore:
                         "channelId": channel_id,
                         "branchId": branch_id,
                         "updatedAt": _server_timestamp(),
+                        "expiresAt": deadline,
                     },
                     merge=False,
                 )
@@ -521,6 +581,7 @@ class FirestoreStore:
                         "channelId": channel_id,
                         "activeBranchId": branch_id,
                         "updatedAt": _server_timestamp(),
+                        "expiresAt": deadline,
                     },
                     merge=False,
                 )
@@ -536,6 +597,8 @@ class FirestoreStore:
             if not snap.exists:
                 return None
             data = snap.to_dict() or {}
+            if expired(data):
+                return None
             if str(data.get("channelId") or "") != str(channel_id):
                 return None
             branch_id = str(data.get("branchId") or "")
@@ -551,6 +614,8 @@ class FirestoreStore:
             if not snap.exists:
                 return None
             data = snap.to_dict() or {}
+            if expired(data):
+                return None
             branch_id = str(data.get("activeBranchId") or "")
             return branch_id or None
 
@@ -559,12 +624,17 @@ class FirestoreStore:
     async def set_active_branch(
         self, guild_id: str, channel_id: str, branch_id: str
     ) -> None:
+        deadline = expiry(
+            (await self.get_config(guild_id))["ai"]["memoryRetentionDays"]
+        )
+
         def work() -> None:
             self._channel_state_collection(guild_id).document(str(channel_id)).set(
                 {
                     "channelId": channel_id,
                     "activeBranchId": branch_id,
                     "updatedAt": _server_timestamp(),
+                    "expiresAt": deadline,
                 },
                 merge=False,
             )
@@ -754,6 +824,7 @@ class FirestoreStore:
                         "event": event,
                         "payload": safe_payload(payload or {}),
                         "createdAt": _server_timestamp(),
+                        "expiresAt": expiry(30),
                     }
                 )
             )
