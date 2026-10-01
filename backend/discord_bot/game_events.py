@@ -6,6 +6,7 @@ from typing import Any
 import discord
 
 from ..firebase_client import FirestoreStore, MemoryStore
+from ..game_limits import GameLimiter
 from ..presentation import (
     interpret_action,
     send_message_feedback,
@@ -14,6 +15,7 @@ from .common import discord_profile_name, judge_guess_reply
 
 
 class GameEventsMixin:
+    game_limiter: GameLimiter
     _config_for: Any
     guessing_game_locks: Any
     store: MemoryStore | FirestoreStore
@@ -119,6 +121,7 @@ class GameEventsMixin:
                 await self.store.delete_guessing_game(
                     guild_id, channel_id, reply_message_id
                 )
+                self.game_limiter.release_game(guild_id, channel_id, reply_message_id)
             else:
                 state["attempts"] = attempts
                 await self.store.set_guessing_game(

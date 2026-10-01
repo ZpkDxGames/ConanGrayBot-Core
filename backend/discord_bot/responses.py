@@ -159,6 +159,8 @@ async def send_trigger(
 
 
 async def get_interaction_config(interaction: discord.Interaction) -> dict[str, Any]:
+    from .client import ConanBot
+
     bot = interaction.client
     assert isinstance(bot, ConanBot)
     guild_id = str(interaction.guild_id or bot.settings.guild_id or "global")
@@ -224,6 +226,34 @@ async def ensure_command_enabled(interaction: discord.Interaction, key: str) -> 
             ephemeral=True,
         )
         return False
+    if key in {
+        "coinflip",
+        "eightball",
+        "rps",
+        "guesssong",
+        "wouldyourather",
+        "tictactoe",
+    }:
+        bot: Any = interaction.client
+        allowed = str(
+            config.get("games", {}).get("allowedCategoryId")
+            or bot.settings.allowed_category_id
+            or ""
+        )
+        channel = interaction.channel
+        category = getattr(channel, "category_id", None)
+        if category is None:
+            category = getattr(getattr(channel, "parent", None), "category_id", None)
+        if allowed and str(category or "") != allowed:
+            await send_interaction_feedback(
+                interaction,
+                config,
+                title="Games unavailable here",
+                description="Games are restricted to the configured Discord category.",
+                kind="warning",
+                ephemeral=True,
+            )
+            return False
     return True
 
 

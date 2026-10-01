@@ -194,3 +194,17 @@ async def test_staff_authorization_without_gateway(
     else:
         assert await auth.require_staff("789") == "789"
     assert session.calls[0][0].endswith("/guilds/123/members/789")
+
+
+def test_assembled_prompt_budget_includes_system_instructions():
+    from backend.prompts import bounded_messages
+
+    messages = (
+        [{"role": "system", "content": "persona" * 10000}]
+        + [{"role": "user", "content": "old" * 5000}]
+        + [{"role": "user", "content": "latest message"}]
+    )
+    result = bounded_messages(messages, 4000)
+    assert sum(len(row["content"]) for row in result) <= 4000
+    assert result[-1]["content"] == "latest message"
+    assert len(result) == 2

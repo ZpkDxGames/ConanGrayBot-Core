@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING, Any
 import discord
 from discord import app_commands
 
+from ..game_limits import GameLease, game_slot
 from ..presentation import (
     build_feedback_embed,
     interpret_action,
@@ -30,36 +31,39 @@ def make_coinflip_command(bot: ConanBot) -> app_commands.Command:
         if not await ensure_command_enabled(interaction, "coinflip"):
             return
         config = await get_interaction_config(interaction)
-        games = config.get("games", {})
-        if not games.get("coinflipEnabled", True):
-            await send_interaction_feedback(
+        async with game_slot(interaction, config) as lease:
+            if lease is None:
+                return
+            games = config.get("games", {})
+            if not games.get("coinflipEnabled", True):
+                await send_interaction_feedback(
+                    interaction,
+                    config,
+                    title="Coinflip unavailable",
+                    description="Coinflip is disabled from the dashboard.",
+                    kind="warning",
+                    ephemeral=True,
+                )
+                return
+            heads = str(games.get("coinflipHeadsLabel") or "Heads")
+            tails = str(games.get("coinflipTailsLabel") or "Tails")
+            result = random.choice([heads, tails])
+            message = str(
+                games.get("coinflipMessage") or "The universe made a tiny decision."
+            )
+            await send_action_result(
                 interaction,
                 config,
-                title="Coinflip unavailable",
-                description="Coinflip is disabled from the dashboard.",
-                kind="warning",
-                ephemeral=True,
+                feature="coinflip",
+                title="The coin has spoken",
+                outcome=result,
+                facts=f"The deterministic coin result is {result}. Dashboard message: {message}",
+                fields=[
+                    ("Result", f"**{result}**", True),
+                    ("Official statement", message, False),
+                ],
+                kind="game",
             )
-            return
-        heads = str(games.get("coinflipHeadsLabel") or "Heads")
-        tails = str(games.get("coinflipTailsLabel") or "Tails")
-        result = random.choice([heads, tails])
-        message = str(
-            games.get("coinflipMessage") or "The universe made a tiny decision."
-        )
-        await send_action_result(
-            interaction,
-            config,
-            feature="coinflip",
-            title="The coin has spoken",
-            outcome=result,
-            facts=f"The deterministic coin result is {result}. Dashboard message: {message}",
-            fields=[
-                ("Result", f"**{result}**", True),
-                ("Official statement", message, False),
-            ],
-            kind="game",
-        )
 
     return coinflip
 
@@ -73,35 +77,38 @@ def make_eightball_command(bot: ConanBot) -> app_commands.Command:
         if not await ensure_command_enabled(interaction, "eightball"):
             return
         config = await get_interaction_config(interaction)
-        games = config.get("games", {})
-        if not games.get("eightballEnabled", True):
-            await send_interaction_feedback(
+        async with game_slot(interaction, config) as lease:
+            if lease is None:
+                return
+            games = config.get("games", {})
+            if not games.get("eightballEnabled", True):
+                await send_interaction_feedback(
+                    interaction,
+                    config,
+                    title="8-ball unavailable",
+                    description="The 8-ball is disabled from the dashboard.",
+                    kind="warning",
+                    ephemeral=True,
+                )
+                return
+            answers = games.get("eightballAnswers") or [
+                "The vibes say yes.",
+                "No, but dramatically.",
+            ]
+            answer = str(random.choice(answers))
+            await send_action_result(
                 interaction,
                 config,
-                title="8-ball unavailable",
-                description="The 8-ball is disabled from the dashboard.",
-                kind="warning",
-                ephemeral=True,
+                feature="eightball",
+                title="The emotionally suspicious 8-ball",
+                outcome=answer,
+                facts=f"Question: {question}. Selected answer: {answer}.",
+                fields=[
+                    ("You asked", question, False),
+                    ("The answer", f"**{answer}**", False),
+                ],
+                kind="game",
             )
-            return
-        answers = games.get("eightballAnswers") or [
-            "The vibes say yes.",
-            "No, but dramatically.",
-        ]
-        answer = str(random.choice(answers))
-        await send_action_result(
-            interaction,
-            config,
-            feature="eightball",
-            title="The emotionally suspicious 8-ball",
-            outcome=answer,
-            facts=f"Question: {question}. Selected answer: {answer}.",
-            fields=[
-                ("You asked", question, False),
-                ("The answer", f"**{answer}**", False),
-            ],
-            kind="game",
-        )
 
     return eightball
 
@@ -124,45 +131,48 @@ def make_rps_command(bot: ConanBot) -> app_commands.Command:
         if not await ensure_command_enabled(interaction, "rps"):
             return
         config = await get_interaction_config(interaction)
-        games = config.get("games", {})
-        if not games.get("rpsEnabled", True):
-            await send_interaction_feedback(
+        async with game_slot(interaction, config) as lease:
+            if lease is None:
+                return
+            games = config.get("games", {})
+            if not games.get("rpsEnabled", True):
+                await send_interaction_feedback(
+                    interaction,
+                    config,
+                    title="Game unavailable",
+                    description="Rock Paper Scissors is disabled from the dashboard.",
+                    kind="warning",
+                    ephemeral=True,
+                )
+                return
+            bot_choice = random.choice(["rock", "paper", "scissors"])
+            beats = {"rock": "scissors", "paper": "rock", "scissors": "paper"}
+            if choice.value == bot_choice:
+                outcome = "draw"
+                result = games.get("rpsDrawMessage") or "Draw. We are equally dramatic."
+            elif beats[choice.value] == bot_choice:
+                outcome = "you win"
+                result = (
+                    games.get("rpsWinMessage")
+                    or "You win. I will stare out a window about it."
+                )
+            else:
+                outcome = "bot wins"
+                result = games.get("rpsLoseMessage") or "I win. Very humble of me."
+            await send_action_result(
                 interaction,
                 config,
-                title="Game unavailable",
-                description="Rock Paper Scissors is disabled from the dashboard.",
-                kind="warning",
-                ephemeral=True,
+                feature="rps",
+                title="Rock, paper, emotional consequences",
+                outcome=outcome,
+                facts=f"User chose {choice.value}. Bot chose {bot_choice}. Outcome: {outcome}. Configured response: {result}",
+                fields=[
+                    ("Your move", choice.value.title(), True),
+                    ("Bot move", bot_choice.title(), True),
+                    ("Result", str(result), False),
+                ],
+                kind="game",
             )
-            return
-        bot_choice = random.choice(["rock", "paper", "scissors"])
-        beats = {"rock": "scissors", "paper": "rock", "scissors": "paper"}
-        if choice.value == bot_choice:
-            outcome = "draw"
-            result = games.get("rpsDrawMessage") or "Draw. We are equally dramatic."
-        elif beats[choice.value] == bot_choice:
-            outcome = "you win"
-            result = (
-                games.get("rpsWinMessage")
-                or "You win. I will stare out a window about it."
-            )
-        else:
-            outcome = "bot wins"
-            result = games.get("rpsLoseMessage") or "I win. Very humble of me."
-        await send_action_result(
-            interaction,
-            config,
-            feature="rps",
-            title="Rock, paper, emotional consequences",
-            outcome=outcome,
-            facts=f"User chose {choice.value}. Bot chose {bot_choice}. Outcome: {outcome}. Configured response: {result}",
-            fields=[
-                ("Your move", choice.value.title(), True),
-                ("Bot move", bot_choice.title(), True),
-                ("Result", str(result), False),
-            ],
-            kind="game",
-        )
 
     return rps
 
@@ -176,113 +186,118 @@ def make_guesssong_command(bot: ConanBot) -> app_commands.Command:
         if not await ensure_command_enabled(interaction, "guesssong"):
             return
         config = await get_interaction_config(interaction)
-        games = config.get("games", {})
-        if not games.get("guessSongEnabled", False):
-            await send_interaction_feedback(
+        async with game_slot(interaction, config) as lease:
+            if lease is None:
+                return
+            games = config.get("games", {})
+            if not games.get("guessSongEnabled", False):
+                await send_interaction_feedback(
+                    interaction,
+                    config,
+                    title="Game unavailable",
+                    description="Guess the Song is disabled from the dashboard.",
+                    kind="warning",
+                    ephemeral=True,
+                )
+                return
+            rounds = configured_guess_song_rounds(games)
+            if not rounds:
+                await send_interaction_feedback(
+                    interaction,
+                    config,
+                    title="No mystery tracks configured",
+                    description="Add at least one structured song round in Games → Guess the Song.",
+                    kind="warning",
+                    fields=[("Format", "`Answer | alias 1, alias 2 | Hint`", False)],
+                    ephemeral=True,
+                )
+                return
+
+            prompt = str(
+                games.get("guessSongPrompt")
+                or "Guess the Conan-coded song from this hint:"
+            )
+            round_data = random.choice(rounds)
+            answer = str(round_data["answer"])
+            aliases = [str(item) for item in round_data.get("aliases") or []]
+            hint = str(round_data["hint"])
+            max_attempts = max(1, min(int(games.get("guessSongMaxAttempts") or 5), 20))
+            sent = await send_action_result(
                 interaction,
                 config,
-                title="Game unavailable",
-                description="Guess the Song is disabled from the dashboard.",
-                kind="warning",
-                ephemeral=True,
+                feature="guesssong",
+                title="Mystery track",
+                outcome="new clue",
+                facts=f"Prompt: {prompt}. Selected hint: {hint}. The answer is locked and must not be revealed.",
+                fields=[
+                    ("Prompt", prompt, False),
+                    ("Clue", hint, False),
+                    (
+                        "How to play",
+                        "Reply directly to this message with the song title.",
+                        False,
+                    ),
+                    ("Attempts", str(max_attempts), True),
+                    ("Judge", "AI-assisted with deterministic fallback", True),
+                ],
+                kind="game",
             )
-            return
-        rounds = configured_guess_song_rounds(games)
-        if not rounds:
-            await send_interaction_feedback(
-                interaction,
-                config,
-                title="No mystery tracks configured",
-                description="Add at least one structured song round in Games → Guess the Song.",
-                kind="warning",
-                fields=[("Format", "`Answer | alias 1, alias 2 | Hint`", False)],
-                ephemeral=True,
+
+            bot_message_id = str(getattr(sent, "id", "") or "")
+            if not bot_message_id:
+                try:
+                    original = await interaction.original_response()
+                    bot_message_id = str(getattr(original, "id", "") or "")
+                except Exception:
+                    log.exception("Could not resolve /guesssong response message ID")
+            if not bot_message_id:
+                await bot.store.add_log(
+                    str(interaction.guild_id or bot.settings.guild_id or "global"),
+                    "game.guesssong_state_failed",
+                    {
+                        "reason": "missing_response_message_id",
+                        "channelId": str(getattr(interaction, "channel_id", "") or ""),
+                    },
+                )
+                return
+
+            timeout_minutes = max(
+                1, min(int(games.get("guessSongRoundTimeoutMinutes") or 10), 1440)
             )
-            return
-
-        prompt = str(
-            games.get("guessSongPrompt") or "Guess the Conan-coded song from this hint:"
-        )
-        round_data = random.choice(rounds)
-        answer = str(round_data["answer"])
-        aliases = [str(item) for item in round_data.get("aliases") or []]
-        hint = str(round_data["hint"])
-        max_attempts = max(1, min(int(games.get("guessSongMaxAttempts") or 5), 20))
-        sent = await send_action_result(
-            interaction,
-            config,
-            feature="guesssong",
-            title="Mystery track",
-            outcome="new clue",
-            facts=f"Prompt: {prompt}. Selected hint: {hint}. The answer is locked and must not be revealed.",
-            fields=[
-                ("Prompt", prompt, False),
-                ("Clue", hint, False),
-                (
-                    "How to play",
-                    "Reply directly to this message with the song title.",
-                    False,
-                ),
-                ("Attempts", str(max_attempts), True),
-                ("Judge", "AI-assisted with deterministic fallback", True),
-            ],
-            kind="game",
-        )
-
-        bot_message_id = str(getattr(sent, "id", "") or "")
-        if not bot_message_id:
-            try:
-                original = await interaction.original_response()
-                bot_message_id = str(getattr(original, "id", "") or "")
-            except Exception:
-                log.exception("Could not resolve /guesssong response message ID")
-        if not bot_message_id:
-            await bot.store.add_log(
-                str(interaction.guild_id or bot.settings.guild_id or "global"),
-                "game.guesssong_state_failed",
+            guild_id = str(interaction.guild_id or bot.settings.guild_id or "global")
+            channel_id = str(
+                getattr(interaction, "channel_id", "")
+                or getattr(getattr(interaction, "channel", None), "id", "")
+            )
+            await bot.store.set_guessing_game(
+                guild_id,
+                channel_id,
+                bot_message_id,
                 {
-                    "reason": "missing_response_message_id",
-                    "channelId": str(getattr(interaction, "channel_id", "") or ""),
+                    "feature": "guesssong",
+                    "answer": answer,
+                    "aliases": aliases,
+                    "hint": hint,
+                    "starterId": str(interaction.user.id),
+                    "attempts": 0,
+                    "maxAttempts": max_attempts,
+                    "expiresAt": (
+                        datetime.now(timezone.utc) + timedelta(minutes=timeout_minutes)
+                    ).isoformat(),
                 },
             )
-            return
-
-        timeout_minutes = max(
-            1, min(int(games.get("guessSongRoundTimeoutMinutes") or 10), 1440)
-        )
-        guild_id = str(interaction.guild_id or bot.settings.guild_id or "global")
-        channel_id = str(
-            getattr(interaction, "channel_id", "")
-            or getattr(getattr(interaction, "channel", None), "id", "")
-        )
-        await bot.store.set_guessing_game(
-            guild_id,
-            channel_id,
-            bot_message_id,
-            {
-                "feature": "guesssong",
-                "answer": answer,
-                "aliases": aliases,
-                "hint": hint,
-                "starterId": str(interaction.user.id),
-                "attempts": 0,
-                "maxAttempts": max_attempts,
-                "expiresAt": (
-                    datetime.now(timezone.utc) + timedelta(minutes=timeout_minutes)
-                ).isoformat(),
-            },
-        )
-        await bot.store.add_log(
-            guild_id,
-            "game.guesssong_started",
-            {
-                "channelId": channel_id,
-                "promptMessageId": bot_message_id,
-                "starterId": str(interaction.user.id),
-                "maxAttempts": max_attempts,
-                "timeoutMinutes": timeout_minutes,
-            },
-        )
+            lease.hold(timeout_minutes * 60, bot_message_id)
+            await bot.store.add_log(
+                guild_id,
+                "game.guesssong_started",
+                {
+                    "channelId": channel_id,
+                    "promptMessageId": bot_message_id,
+                    "starterId": str(interaction.user.id),
+                    "maxAttempts": max_attempts,
+                    "timeoutMinutes": timeout_minutes,
+                },
+            )
 
     return guesssong
 
@@ -295,34 +310,41 @@ def make_wouldyourather_command(bot: ConanBot) -> app_commands.Command:
         if not await ensure_command_enabled(interaction, "wouldyourather"):
             return
         config = await get_interaction_config(interaction)
-        games = config.get("games", {})
-        if not games.get("wouldYouRatherEnabled", False):
-            await send_interaction_feedback(
+        async with game_slot(interaction, config) as lease:
+            if lease is None:
+                return
+            games = config.get("games", {})
+            if not games.get("wouldYouRatherEnabled", False):
+                await send_interaction_feedback(
+                    interaction,
+                    config,
+                    title="Game unavailable",
+                    description="Would You Rather is disabled from the dashboard.",
+                    kind="warning",
+                    ephemeral=True,
+                )
+                return
+            questions = games.get("wouldYouRatherQuestions") or [
+                "Would you rather be dramatic forever or emotionally stable for one day?"
+            ]
+            question = str(random.choice(questions))
+            await send_action_result(
                 interaction,
                 config,
-                title="Game unavailable",
-                description="Would You Rather is disabled from the dashboard.",
-                kind="warning",
-                ephemeral=True,
+                feature="wouldyourather",
+                title="Choose your tiny crisis",
+                outcome="question selected",
+                facts=question,
+                fields=[
+                    ("Would you rather…", question, False),
+                    (
+                        "Rules",
+                        "Pick one. Defend it like the bridge depends on it.",
+                        False,
+                    ),
+                ],
+                kind="game",
             )
-            return
-        questions = games.get("wouldYouRatherQuestions") or [
-            "Would you rather be dramatic forever or emotionally stable for one day?"
-        ]
-        question = str(random.choice(questions))
-        await send_action_result(
-            interaction,
-            config,
-            feature="wouldyourather",
-            title="Choose your tiny crisis",
-            outcome="question selected",
-            facts=question,
-            fields=[
-                ("Would you rather…", question, False),
-                ("Rules", "Pick one. Defend it like the bridge depends on it.", False),
-            ],
-            kind="game",
-        )
 
     return wouldyourather
 
@@ -333,8 +355,10 @@ class TicTacToeView(discord.ui.View):
         owner_id: int,
         opponent_id: int | None = None,
         config: dict[str, Any] | None = None,
+        lease: GameLease | None = None,
     ) -> None:
         super().__init__(timeout=300)
+        self.lease = lease
         self.owner_id = owner_id
         self.opponent_id = opponent_id
         self.config = config or {}
@@ -344,6 +368,12 @@ class TicTacToeView(discord.ui.View):
         self.move_lock = asyncio.Lock()
         for index in range(9):
             self.add_item(TicTacToeButton(index))
+
+    async def on_timeout(self) -> None:
+        self.stop()
+        self.disable_board()
+        if self.lease is not None:
+            self.lease.release()
 
     def current_player_id(self) -> int | None:
         return self.owner_id if self.turn == "X" else self.opponent_id
@@ -391,6 +421,8 @@ class TicTacToeView(discord.ui.View):
         winner = self.winner()
         if winner:
             self.stop()
+            if self.lease is not None:
+                self.lease.release()
             self.disable_board()
             if winner == "draw":
                 outcome = "draw"
@@ -508,75 +540,59 @@ def make_tictactoe_command(bot: ConanBot) -> app_commands.Command:
         if not await ensure_command_enabled(interaction, "tictactoe"):
             return
         config = await get_interaction_config(interaction)
-        allowed_category_id = str(
-            config.get("games", {}).get("allowedCategoryId")
-            or bot.settings.allowed_category_id
-        )
-        channel = interaction.channel
-        if (
-            allowed_category_id
-            and getattr(channel, "category_id", None)
-            and str(getattr(channel, "category_id", "")) != allowed_category_id
-        ):
-            await send_interaction_feedback(
+        async with game_slot(interaction, config) as lease:
+            if lease is None:
+                return
+            games = config.get("games", {})
+            if not games.get("ticTacToeEnabled", True):
+                await send_interaction_feedback(
+                    interaction,
+                    config,
+                    title="Game unavailable",
+                    description="Tic-tac-toe is disabled from the dashboard.",
+                    kind="warning",
+                    ephemeral=True,
+                )
+                return
+            if not games.get("ticTacToeAllowBotOpponent", True) and opponent is None:
+                await send_interaction_feedback(
+                    interaction,
+                    config,
+                    title="Opponent required",
+                    description="The bot opponent is disabled. Choose another server member.",
+                    kind="warning",
+                    ephemeral=True,
+                )
+                return
+            if opponent and opponent.bot:
+                opponent = None
+            view = TicTacToeView(
+                interaction.user.id, opponent.id if opponent else None, config, lease
+            )
+            opponent_text = (
+                opponent.mention
+                if opponent
+                else "Conan Gray Bot's extremely questionable strategy"
+            )
+            await send_action_result(
                 interaction,
                 config,
-                title="Games unavailable here",
-                description="Games are restricted to the configured Discord category.",
-                kind="warning",
-                fields=[("Allowed category ID", allowed_category_id, False)],
-                ephemeral=True,
+                feature="tictactoe",
+                title="Tic-tac-toe opening scene",
+                outcome="game started",
+                facts=f"Player X is {interaction.user.mention}. Player O is {opponent_text}. X moves first.",
+                fields=[
+                    (
+                        "Players",
+                        f"{interaction.user.mention} **vs.** {opponent_text}",
+                        False,
+                    ),
+                    ("Opening turn", "X", True),
+                    ("Board", "```\n·  ·  ·\n·  ·  ·\n·  ·  ·\n```", False),
+                ],
+                kind="game",
+                view=view,
             )
-            return
-        games = config.get("games", {})
-        if not games.get("ticTacToeEnabled", True):
-            await send_interaction_feedback(
-                interaction,
-                config,
-                title="Game unavailable",
-                description="Tic-tac-toe is disabled from the dashboard.",
-                kind="warning",
-                ephemeral=True,
-            )
-            return
-        if not games.get("ticTacToeAllowBotOpponent", True) and opponent is None:
-            await send_interaction_feedback(
-                interaction,
-                config,
-                title="Opponent required",
-                description="The bot opponent is disabled. Choose another server member.",
-                kind="warning",
-                ephemeral=True,
-            )
-            return
-        if opponent and opponent.bot:
-            opponent = None
-        view = TicTacToeView(
-            interaction.user.id, opponent.id if opponent else None, config
-        )
-        opponent_text = (
-            opponent.mention
-            if opponent
-            else "Conan Gray Bot's extremely questionable strategy"
-        )
-        await send_action_result(
-            interaction,
-            config,
-            feature="tictactoe",
-            title="Tic-tac-toe opening scene",
-            outcome="game started",
-            facts=f"Player X is {interaction.user.mention}. Player O is {opponent_text}. X moves first.",
-            fields=[
-                (
-                    "Players",
-                    f"{interaction.user.mention} **vs.** {opponent_text}",
-                    False,
-                ),
-                ("Opening turn", "X", True),
-                ("Board", "```\n·  ·  ·\n·  ·  ·\n·  ·  ·\n```", False),
-            ],
-            kind="game",
-            view=view,
-        )
+            lease.hold(300)
 
     return tictactoe

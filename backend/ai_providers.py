@@ -12,6 +12,7 @@ import aiohttp
 
 from .config import get_settings
 from .http import pooled_session
+from .prompts import bounded_messages
 from .providers import manager
 
 log = logging.getLogger("conan.ai")
@@ -1022,6 +1023,9 @@ async def _ask_ai(
         personality, history, user_text, ai_config, conversation_context
     )
 
+    messages = bounded_messages(
+        messages, int(ai_config.get("maxPromptCharacters") or 24000)
+    )
     errors: list[str] = []
     for provider in provider_order:
         if not manager.available(provider):

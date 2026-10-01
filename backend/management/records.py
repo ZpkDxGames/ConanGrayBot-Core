@@ -115,9 +115,11 @@ async def delete_media(
     record = await runtime.store.get_media_record(guild_id, record_id)
     if record is None:
         raise HTTPException(status_code=404, detail="Media record not found")
+    drive_file_deleted = False
     if delete_drive_file and record.get("driveFileId"):
         try:
             await runtime.drive_archive.delete_file(str(record["driveFileId"]))
+            drive_file_deleted = True
         except Exception as exc:
             log.exception("Could not delete Google Drive media file")
             raise HTTPException(
@@ -131,11 +133,11 @@ async def delete_media(
         {
             "recordId": record_id,
             "driveFileId": record.get("driveFileId"),
-            "driveFileDeleted": bool(delete_drive_file),
+            "driveFileDeleted": drive_file_deleted,
             "source": "dashboard",
         },
     )
-    return {"ok": True, "record": removed, "driveFileDeleted": bool(delete_drive_file)}
+    return {"ok": True, "record": removed, "driveFileDeleted": drive_file_deleted}
 
 
 @router.get("/api/v1/logs/{guild_id}", response_model=models.RecordsPage)

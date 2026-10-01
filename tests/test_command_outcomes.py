@@ -7,6 +7,7 @@ from discord import app_commands
 
 from backend.config import DEFAULT_BOT_CONFIG
 from backend.discord_bot import games, responses, utility
+from backend.game_limits import GameLimiter
 
 
 @pytest.fixture
@@ -15,13 +16,18 @@ def command_fixture(monkeypatch):
     config["games"]["allowedCategoryId"] = ""
     config["games"]["wouldYouRatherEnabled"] = True
     interaction = SimpleNamespace(
+        guild_id=123,
+        channel_id=456,
         guild=SimpleNamespace(id=123),
         channel=SimpleNamespace(id=456, category_id=None),
         user=SimpleNamespace(id=789, mention="<@789>", name="Fixture"),
     )
     bot = SimpleNamespace(
-        settings=SimpleNamespace(allowed_category_id=""), latency=0.15
+        settings=SimpleNamespace(allowed_category_id=""),
+        latency=0.15,
+        game_limiter=GameLimiter(),
     )
+    interaction.client = bot
     for module in [games, utility]:
         monkeypatch.setattr(
             module, "ensure_command_enabled", AsyncMock(return_value=True)

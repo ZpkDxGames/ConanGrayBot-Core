@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import shutil
+import tempfile
 from pathlib import Path
 from urllib.parse import urlparse
 
@@ -30,7 +32,16 @@ def set_env_values(path: Path, updates: dict[str, str]) -> None:
     for key, value in updates.items():
         if key not in seen:
             output.append(f"{key}={value}")
-    path.write_text("\n".join(output) + "\n", encoding="utf-8")
+    # Create privately before writing; replace atomically without following a
+    # destination symlink or briefly exposing credentials under the user's umask.
+    fd, temporary = tempfile.mkstemp(dir=path.parent, prefix=".oauth-env-")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as stream:
+            stream.write("\n".join(output) + "\n")
+        os.replace(temporary, path)
+    finally:
+        if os.path.exists(temporary):
+            os.unlink(temporary)
 
 
 def validate_google_client_secret(secret: str) -> None:
@@ -67,8 +78,8 @@ def parse_loopback_redirect(uri: str) -> tuple[str, int, bool]:
 def load_downloaded_client(path: Path) -> tuple[str, dict[str, object]]:
     try:
         payload = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError) as exc:
-        raise SystemExit(f"Could not read OAuth client JSON: {exc}") from exc
+    except (OSError, json.JSONDecodeError):
+        raise SystemExit("Could not read OAuth client JSON.") from None
 
     if isinstance(payload.get("installed"), dict):
         return "desktop", payload["installed"]
@@ -246,7 +257,9 @@ def main() -> None:
 
     backup = ROOT / ".env.before-drive-oauth"
     if ENV_PATH.exists() and not backup.exists():
-        shutil.copy2(ENV_PATH, backup)
+        fd = os.open(backup, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        with os.fdopen(fd, "wb") as target, ENV_PATH.open("rb") as source:
+            shutil.copyfileobj(source, target)
 
     set_env_values(
         ENV_PATH,

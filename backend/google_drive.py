@@ -366,6 +366,12 @@ class GoogleDriveArchive:
                 self.credential_project_id,
             )
 
+    async def close(self) -> None:
+        service, self._service = self._service, None
+        transport = getattr(service, "_http", None) if service else None
+        if transport and callable(getattr(transport, "close", None)):
+            await self._execute(transport.close)
+
     async def _execute(self, call, *args, **kwargs):
         async with self._operation_lock:
             return await run_blocking(call, *args, **kwargs)
@@ -795,7 +801,10 @@ class GoogleDriveArchive:
         service = await self._get_service()
         path = Path(file_path)
 
+        created_id = ""
+
         def work() -> dict[str, Any]:
+            nonlocal created_id
             from googleapiclient.http import MediaFileUpload
 
             media = MediaFileUpload(
@@ -822,6 +831,7 @@ class GoogleDriveArchive:
                 )
                 .execute()
             )
+            created_id = str(created.get("id") or "")
             if make_public:
                 try:
                     service.permissions().create(
@@ -852,6 +862,15 @@ class GoogleDriveArchive:
 
         try:
             return await self._execute(work)
+        except asyncio.CancelledError:
+            if created_id:
+                try:
+                    await self.delete_file(created_id)
+                except Exception:
+                    log.error(
+                        "Cancelled upload compensation failed; operator reconciliation required"
+                    )
+            raise
         except DriveConfigurationError:
             raise
         except Exception as exc:

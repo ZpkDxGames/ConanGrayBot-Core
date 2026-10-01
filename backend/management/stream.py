@@ -78,6 +78,16 @@ async def stream_drive_media(
         r"bytes=(?:[0-9]+-[0-9]*|-[0-9]+)", range_header
     ):
         raise HTTPException(416, "Invalid byte range")
+    if range_header:
+        start, end = range_header[6:].split("-", 1)
+        if start:
+            first = int(start)
+            if (end and int(end) < first) or (total_size and first >= total_size):
+                raise HTTPException(416, "Unsatisfiable byte range")
+            if end and total_size:
+                range_header = f"bytes={first}-{min(int(end), total_size - 1)}"
+        elif int(end) == 0:
+            raise HTTPException(416, "Unsatisfiable byte range")
     try:
         session, drive_response = await runtime.drive_archive.open_file_stream(
             file_id, range_header=range_header

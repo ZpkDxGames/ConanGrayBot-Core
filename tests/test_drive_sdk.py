@@ -201,3 +201,52 @@ async def test_stream_http_failure_closes_response_and_session(archive, monkeypa
     assert "private response" not in str(error.value)
     session.close.assert_called_once()
     response.close.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_close_releases_cached_sdk_transport(archive):
+    service = MagicMock()
+    archive._service = service
+    await archive.close()
+    service._http.close.assert_called_once()
+    assert archive._service is None
+    await archive.close()
+    service._http.close.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_cancelled_upload_waits_for_worker_and_compensates(
+    archive, monkeypatch, tmp_path
+):
+    import asyncio
+    import threading
+
+    started, finish = threading.Event(), threading.Event()
+    service = MagicMock()
+
+    def create():
+        started.set()
+        assert finish.wait(3)
+        return {"id": "cancelled-file"}
+
+    service.files.return_value.create.return_value.execute.side_effect = create
+    monkeypatch.setattr(archive, "_get_service", AsyncMock(return_value=service))
+    cleanup = AsyncMock()
+    monkeypatch.setattr(archive, "delete_file", cleanup)
+    path = tmp_path / "media.png"
+    path.write_bytes(b"fixture")
+    task = asyncio.create_task(
+        archive.upload_file(
+            path,
+            folder_id_or_url="fixture-folder-123",
+            file_name="media.png",
+            mime_type="image/png",
+        )
+    )
+    while not started.is_set():
+        await asyncio.sleep(0)
+    task.cancel()
+    finish.set()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    cleanup.assert_awaited_once_with("cancelled-file")

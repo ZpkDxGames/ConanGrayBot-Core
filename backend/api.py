@@ -36,6 +36,7 @@ async def lifespan(app):
     finally:
         async with runtime.bot_lifecycle_lock:
             await runtime._stop_discord_bot_locked()
+        await runtime.drive_archive.close()
         await close_sessions()
 
 

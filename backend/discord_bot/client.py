@@ -11,6 +11,7 @@ from discord.ext import commands
 
 from ..config import get_settings
 from ..firebase_client import FirestoreStore, MemoryStore
+from ..game_limits import GameLimiter
 from ..state import TTLRegistry
 from ..weather import (
     OpenWeatherClient,
@@ -45,6 +46,7 @@ class ConanBot(
         intents.members = self.settings.enable_members_intent
 
         super().__init__(command_prefix="c!", intents=intents)
+        self.game_limiter = GameLimiter()
         self.store = store
         self.control_callback = control_callback
         self.drive_archive = drive_archive
