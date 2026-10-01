@@ -262,8 +262,8 @@ class OpenWeatherClient:
                     name=str(payload.get("name") or cleaned),
                     state="",
                     country=str(payload.get("country") or country),
-                    latitude=float(payload.get("lat")),
-                    longitude=float(payload.get("lon")),
+                    latitude=float(payload.get("lat") or 0),
+                    longitude=float(payload.get("lon") or 0),
                 )
                 self._geocode_cache[cache_key] = (time.monotonic(), location)
                 return location
@@ -355,10 +355,16 @@ class OpenWeatherClient:
         units: str,
         forecast_hours: int,
     ) -> dict[str, Any]:
-        main = current.get("main") if isinstance(current.get("main"), dict) else {}
-        wind = current.get("wind") if isinstance(current.get("wind"), dict) else {}
+        main = (
+            (current.get("main") or {}) if isinstance(current.get("main"), dict) else {}
+        )
+        wind = (
+            (current.get("wind") or {}) if isinstance(current.get("wind"), dict) else {}
+        )
         weather_rows = (
-            current.get("weather") if isinstance(current.get("weather"), list) else []
+            (current.get("weather") or [])
+            if isinstance(current.get("weather"), list)
+            else []
         )
         weather_now = (
             weather_rows[0]
@@ -379,9 +385,13 @@ class OpenWeatherClient:
             timestamp = int(row.get("dt") or 0)
             if timestamp <= 0 or timestamp > cutoff:
                 continue
-            row_main = row.get("main") if isinstance(row.get("main"), dict) else {}
+            row_main = (
+                (row.get("main") or {}) if isinstance(row.get("main"), dict) else {}
+            )
             row_weather = (
-                row.get("weather") if isinstance(row.get("weather"), list) else []
+                (row.get("weather") or [])
+                if isinstance(row.get("weather"), list)
+                else []
             )
             row_condition = (
                 row_weather[0]

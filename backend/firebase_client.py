@@ -44,18 +44,18 @@ class MemoryStore:
     def __init__(self) -> None:
         self._guilds: dict[str, dict[str, Any]] = {}
         self._config_lock = asyncio.Lock()
-        self._sessions: dict[str, dict[str, Any]] = TTLRegistry(
+        self._sessions: TTLRegistry[dict[str, Any]] = TTLRegistry(
             5000, get_settings().memory_retention_days * 86400
         )
-        self._branch_refs: dict[str, str] = TTLRegistry(
+        self._branch_refs: TTLRegistry[str] = TTLRegistry(
             5000, get_settings().memory_retention_days * 86400
         )
-        self._active_branches: dict[str, str] = TTLRegistry(
+        self._active_branches: TTLRegistry[str] = TTLRegistry(
             5000, get_settings().memory_retention_days * 86400
         )
         self._logs: dict[str, list[dict[str, Any]]] = {}
         self._media: dict[str, list[dict[str, Any]]] = {}
-        self._guessing_games: dict[str, dict[str, Any]] = TTLRegistry(
+        self._guessing_games: TTLRegistry[dict[str, Any]] = TTLRegistry(
             5000, get_settings().memory_retention_days * 86400
         )
 
@@ -773,7 +773,7 @@ class FirestoreStore:
             for doc in query.stream():
                 data = doc.to_dict() or {}
                 created = data.get("createdAt")
-                if hasattr(created, "isoformat"):
+                if created is not None and hasattr(created, "isoformat"):
                     data["createdAt"] = created.isoformat()
                 rows.append(data)
             return rows
@@ -830,7 +830,7 @@ class FirestoreStore:
                     continue
                 data.setdefault("recordId", doc.id)
                 created = data.get("createdAt")
-                if hasattr(created, "isoformat"):
+                if created is not None and hasattr(created, "isoformat"):
                     data["createdAt"] = created.isoformat()
                 rows.append(data)
                 if len(rows) >= max(1, min(limit, 250)):
@@ -849,7 +849,7 @@ class FirestoreStore:
             data = snap.to_dict() or {}
             data.setdefault("recordId", snap.id)
             created = data.get("createdAt")
-            if hasattr(created, "isoformat"):
+            if created is not None and hasattr(created, "isoformat"):
                 data["createdAt"] = created.isoformat()
             return data
 
@@ -886,7 +886,7 @@ class FirestoreStore:
 def merge_bot_config(update: dict[str, Any] | None) -> dict[str, Any]:
     update = copy.deepcopy(update or {})
     merged = deep_merge(copy.deepcopy(DEFAULT_BOT_CONFIG), update)
-    incoming_ai = update.get("ai") if isinstance(update.get("ai"), dict) else {}
+    incoming_ai = (update.get("ai") or {}) if isinstance(update.get("ai"), dict) else {}
     if "replyStyle" not in incoming_ai:
         merged["ai"]["replyStyle"] = (
             "embed" if merged["ai"].get("embedReplies", True) else "plain"
@@ -917,7 +917,7 @@ def merge_bot_config(update: dict[str, Any] | None) -> dict[str, Any]:
             merged["ai"]["structureInstructions"] = AI_CONAN_STRUCTURE_INSTRUCTIONS
 
         if migrating_shipped_persona:
-            shipped_style_defaults = {
+            shipped_style_defaults: dict[str, tuple[set[Any], Any]] = {
                 "responseLength": ({"balanced", "brief"}, "brief"),
                 "toneStyle": ({"adaptive", "casual", "natural"}, "natural"),
                 "emojiStyle": ({"occasional", "rare"}, "rare"),
@@ -985,7 +985,7 @@ def merge_bot_config(update: dict[str, Any] | None) -> dict[str, Any]:
     # into the footer. Migrate only the shipped/default shape; custom game
     # profiles keep their existing inheritance and copy.
     incoming_presentation = (
-        update.get("presentation")
+        (update.get("presentation") or {})
         if isinstance(update.get("presentation"), dict)
         else {}
     )
@@ -997,12 +997,12 @@ def merge_bot_config(update: dict[str, Any] | None) -> dict[str, Any]:
         template_profile_version = 0
     if template_profile_version < 2:
         incoming_templates = (
-            update.get("messageTemplates")
+            (update.get("messageTemplates") or {})
             if isinstance(update.get("messageTemplates"), dict)
             else {}
         )
         incoming_game = (
-            incoming_templates.get("game")
+            (incoming_templates.get("game") or {})
             if isinstance(incoming_templates.get("game"), dict)
             else {}
         )
@@ -1043,10 +1043,14 @@ def merge_bot_config(update: dict[str, Any] | None) -> dict[str, Any]:
         merged["presentation"]["messageTemplateProfileVersion"] = 2
 
     incoming_presence = (
-        update.get("presence") if isinstance(update.get("presence"), dict) else {}
+        (update.get("presence") or {})
+        if isinstance(update.get("presence"), dict)
+        else {}
     )
     presence = (
-        merged.get("presence") if isinstance(merged.get("presence"), dict) else {}
+        (merged.get("presence") or {})
+        if isinstance(merged.get("presence"), dict)
+        else {}
     )
     allowed_statuses = {"online", "idle", "dnd", "invisible"}
     allowed_activity_types = {
@@ -1123,9 +1127,9 @@ def merge_bot_config(update: dict[str, Any] | None) -> dict[str, Any]:
     merged["presence"] = presence
 
     incoming_media = (
-        update.get("media") if isinstance(update.get("media"), dict) else {}
+        (update.get("media") or {}) if isinstance(update.get("media"), dict) else {}
     )
-    media = merged.get("media") if isinstance(merged.get("media"), dict) else {}
+    media = (merged.get("media") or {}) if isinstance(merged.get("media"), dict) else {}
     # Version 2 restores the original Discord delivery layout for videos:
     # a native attachment/player followed by the configured feedback embed.
     # Configurations saved by the temporary Components V2 release did not carry
@@ -1146,7 +1150,7 @@ def merge_bot_config(update: dict[str, Any] | None) -> dict[str, Any]:
     merged["media"] = media
 
     incoming_games = (
-        update.get("games") if isinstance(update.get("games"), dict) else {}
+        (update.get("games") or {}) if isinstance(update.get("games"), dict) else {}
     )
     if "guessSongRounds" not in incoming_games and "guessSongHints" in incoming_games:
         legacy_hints = [

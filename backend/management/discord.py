@@ -51,7 +51,7 @@ async def get_channels(
     try:
         raw_channels = list(getattr(guild, "channels", []) or [])
         if hasattr(guild, "fetch_channels"):
-            raw_channels = await guild.fetch_channels()
+            raw_channels = list(await guild.fetch_channels())
             source = "rest"
     except discord.Forbidden:
         raw_channels = list(getattr(guild, "channels", []) or [])

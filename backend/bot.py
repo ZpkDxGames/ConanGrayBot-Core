@@ -579,8 +579,8 @@ def short_id() -> str:
 
 
 def trim_conversation_history(
-    history: list[dict[str, str]], limit: int
-) -> list[dict[str, str]]:
+    history: list[dict[str, Any]], limit: int
+) -> list[dict[str, Any]]:
     """Keep recent complete turns so the model never starts on an orphaned bot reply."""
     safe_limit = max(4, limit)
     trimmed = history[-safe_limit:]
@@ -713,7 +713,9 @@ class ConanBot(commands.Bot):
     @staticmethod
     def _presence_entries(presence: dict[str, Any]) -> list[dict[str, Any]]:
         raw_entries = (
-            presence.get("entries") if isinstance(presence.get("entries"), list) else []
+            (presence.get("entries") or [])
+            if isinstance(presence.get("entries"), list)
+            else []
         )
         entries: list[dict[str, Any]] = []
         for raw in raw_entries[:20]:
@@ -838,7 +840,7 @@ class ConanBot(commands.Bot):
         target_guild = str(guild_id or self.settings.guild_id or "global")
         config = await self.store.get_config(target_guild)
         presence = (
-            config.get("presence", {})
+            (config.get("presence", {}) or {})
             if isinstance(config.get("presence"), dict)
             else {}
         )
@@ -993,7 +995,7 @@ class ConanBot(commands.Bot):
                 )
                 if not channel_id:
                     continue
-                channel = (
+                channel: Any = (
                     guild.get_channel(int(channel_id))
                     if hasattr(guild, "get_channel")
                     else None
@@ -1063,6 +1065,8 @@ class ConanBot(commands.Bot):
         return await self.control_callback(action, str(guild_id), str(actor_id))
 
     async def on_message(self, message: discord.Message) -> None:
+        if message.guild is None:
+            return
         if message.author.bot or not message.guild:
             return
 
@@ -1084,6 +1088,8 @@ class ConanBot(commands.Bot):
         return lock
 
     async def _handle_guessing_game_reply(self, message: discord.Message) -> bool:
+        if message.guild is None:
+            return False
         reference = getattr(message, "reference", None)
         if reference is None:
             return False
@@ -1276,7 +1282,9 @@ class ConanBot(commands.Bot):
         explicit_location: str = "",
     ) -> tuple[str, str]:
         weather_config = (
-            config.get("weather", {}) if isinstance(config.get("weather"), dict) else {}
+            (config.get("weather", {}) or {})
+            if isinstance(config.get("weather"), dict)
+            else {}
         )
         explicit = " ".join(str(explicit_location or "").split()).strip()
         if explicit:
@@ -1308,7 +1316,9 @@ class ConanBot(commands.Bot):
             saved_locations = {}
             weather_config["userLocations"] = saved_locations
         location = (
-            report.get("location") if isinstance(report.get("location"), dict) else {}
+            (report.get("location") or {})
+            if isinstance(report.get("location"), dict)
+            else {}
         )
         latitude = float(location.get("latitude") or 0)
         longitude = float(location.get("longitude") or 0)
@@ -1325,8 +1335,12 @@ class ConanBot(commands.Bot):
         config: dict[str, Any],
         text: str,
     ) -> bool:
+        if message.guild is None:
+            return False
         weather_config = (
-            config.get("weather", {}) if isinstance(config.get("weather"), dict) else {}
+            (config.get("weather", {}) or {})
+            if isinstance(config.get("weather"), dict)
+            else {}
         )
         if not weather_config.get("enabled", True) or not weather_config.get(
             "aiDetectionEnabled", True
@@ -1388,6 +1402,8 @@ class ConanBot(commands.Bot):
         return True
 
     async def _handle_ai_message(self, message: discord.Message) -> None:
+        if message.guild is None:
+            return
         config = await self._config_for(message.guild.id)
         ai_config = config.get("ai", {})
         ai_enabled = bool(ai_config.get("enabled", True))
@@ -1668,7 +1684,7 @@ class ConanBot(commands.Bot):
                 session = {"messages": [], "rootMessageId": root_message_id}
                 branch_reason = "mention_started_shared"
             elif reply_message_id and reply_continues_branch:
-                branch_id = mapped_reply_branch
+                branch_id = mapped_reply_branch or ""
                 if not branch_id and shared_channel_memory:
                     branch_id = await self.store.get_active_branch(
                         guild_id, channel_key
@@ -1690,7 +1706,7 @@ class ConanBot(commands.Bot):
                 branch_id = (
                     await self.store.get_active_branch(guild_id, channel_key)
                     if shared_channel_memory
-                    else None
+                    else ""
                 )
                 if not branch_id:
                     branch_id = "shared"
@@ -1865,6 +1881,8 @@ class ConanBot(commands.Bot):
             )
 
     async def _handle_media_archive(self, message: discord.Message) -> None:
+        if message.guild is None:
+            return
         attachments = list(getattr(message, "attachments", None) or [])
         if not attachments:
             return
@@ -2071,6 +2089,8 @@ class ConanBot(commands.Bot):
             )
 
     async def _handle_media_triggers(self, message: discord.Message) -> None:
+        if message.guild is None:
+            return
         config = await self._config_for(message.guild.id)
         allowed_category_id = str(
             config.get("games", {}).get("allowedCategoryId")
@@ -2732,7 +2752,9 @@ def make_weather_command(bot: ConanBot) -> app_commands.Command:
             return
         config = await get_interaction_config(interaction)
         weather_config = (
-            config.get("weather", {}) if isinstance(config.get("weather"), dict) else {}
+            (config.get("weather", {}) or {})
+            if isinstance(config.get("weather"), dict)
+            else {}
         )
         if not weather_config.get("enabled", True):
             await send_interaction_feedback(
@@ -4190,7 +4212,7 @@ def make_tictactoe_command(bot: ConanBot) -> app_commands.Command:
         if (
             allowed_category_id
             and getattr(channel, "category_id", None)
-            and str(channel.category_id) != allowed_category_id
+            and str(getattr(channel, "category_id", "")) != allowed_category_id
         ):
             await send_interaction_feedback(
                 interaction,

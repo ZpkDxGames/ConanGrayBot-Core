@@ -6,6 +6,9 @@ from types import SimpleNamespace
 from urllib.parse import parse_qs, urlparse
 
 import pytest
+from fastapi.testclient import TestClient
+from pydantic import ValidationError
+
 from backend.config import DEFAULT_BOT_CONFIG, Settings, get_settings
 from backend.firebase_client import MemoryStore
 from backend.logging import redact, safe_payload
@@ -18,8 +21,6 @@ from backend.migrations import RevisionConflict, migrate_config
 from backend.models import BotConfig
 from backend.security import actor_signature, rates, replays
 from backend.state import TTLRegistry
-from fastapi.testclient import TestClient
-from pydantic import ValidationError
 
 
 @pytest.fixture

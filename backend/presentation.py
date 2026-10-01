@@ -142,12 +142,14 @@ def template_profile(
     config: dict[str, Any], template_key: str | None, kind: str
 ) -> dict[str, Any]:
     templates = (
-        config.get("messageTemplates")
+        (config.get("messageTemplates") or {})
         if isinstance(config.get("messageTemplates"), dict)
         else {}
     )
     global_profile = (
-        templates.get("global") if isinstance(templates.get("global"), dict) else {}
+        (templates.get("global") or {})
+        if isinstance(templates.get("global"), dict)
+        else {}
     )
     requested_key = str(template_key or kind or "info")
 
@@ -160,7 +162,7 @@ def template_profile(
             return dict(global_profile)
 
         selected = (
-            templates.get(profile_key)
+            (templates.get(profile_key) or {})
             if isinstance(templates.get(profile_key), dict)
             else {}
         )
@@ -741,7 +743,7 @@ async def send_interaction_inline_media_card(
         description=media_description[:1024],
         spoiler=False,
     )
-    gallery = discord.ui.MediaGallery(gallery_item)
+    gallery: discord.ui.MediaGallery[Any] = discord.ui.MediaGallery(gallery_item)
     children: list[Any] = []
     if intro:
         children.append(discord.ui.TextDisplay(intro[:4000]))
@@ -829,7 +831,7 @@ async def send_message_inline_media_card(
         description=media_description[:1024],
         spoiler=False,
     )
-    gallery = discord.ui.MediaGallery(gallery_item)
+    gallery: discord.ui.MediaGallery[Any] = discord.ui.MediaGallery(gallery_item)
     children: list[Any] = []
     if intro:
         children.append(discord.ui.TextDisplay(intro[:4000]))

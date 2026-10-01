@@ -15,7 +15,10 @@ router = APIRouter()
 
 
 @router.api_route(
-    "/media/drive/{file_id}/{filename}", methods=["GET", "HEAD"], response_model=None
+    "/media/drive/{file_id}/{filename}",
+    methods=["GET", "HEAD"],
+    response_model=None,
+    include_in_schema=False,
 )
 async def stream_drive_media(
     file_id: str,

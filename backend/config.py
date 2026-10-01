@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 from dataclasses import dataclass, field
 from functools import lru_cache
+from typing import Any
 
 from dotenv import load_dotenv
 
@@ -335,7 +336,7 @@ AI_CONAN_STRUCTURE_INSTRUCTIONS = (
 )
 
 
-DEFAULT_BOT_CONFIG = {
+DEFAULT_BOT_CONFIG: dict[str, Any] = {
     "appearance": {
         "accentColor": "#67e8f9",
         "embedFooter": "Conan Gray Bot • online, dramatic, and glowing cyan",

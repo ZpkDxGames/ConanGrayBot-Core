@@ -211,7 +211,7 @@ def _clamped_int(
         return max(
             minimum,
             min(
-                int(ai_config.get(key) if ai_config.get(key) is not None else default),
+                int(ai_config.get(key, default) or 0),
                 maximum,
             ),
         )
@@ -395,6 +395,7 @@ def _fallback_persona_line(
     history: list[dict[str, str]], user_text: str, *, low_energy: bool
 ) -> str:
     current = _current_message_text(user_text).strip().lower()
+    candidates: tuple[str, ...]
     if low_energy:
         if any(mark in current for mark in ("😭", "💀")):
             candidates = ("😭", "literally", "yeah that's fair", "real")
@@ -832,7 +833,7 @@ def _is_free_openrouter_model(row: dict[str, Any]) -> bool:
     model_id = str(row.get("id") or "")
     if model_id.endswith(":free"):
         return True
-    pricing = row.get("pricing") if isinstance(row.get("pricing"), dict) else {}
+    pricing = (row.get("pricing") or {}) if isinstance(row.get("pricing"), dict) else {}
     if not pricing or not all(key in pricing for key in ("prompt", "completion")):
         return False
     try:
@@ -900,7 +901,9 @@ async def _discover_openrouter_models(
                             raise AIProviderError(
                                 f"OpenRouter model catalog HTTP {resp.status}: {str(data)[:220]}"
                             )
-                        rows = data.get("data") if isinstance(data, dict) else []
+                        rows = (
+                            (data.get("data") or []) if isinstance(data, dict) else []
+                        )
                         if not isinstance(rows, list):
                             raise AIProviderError(
                                 "OpenRouter model catalog returned an invalid response"
