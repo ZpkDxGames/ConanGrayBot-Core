@@ -1,13 +1,13 @@
 from unittest.mock import AsyncMock
 
 import pytest
-from test_security_contract import client as client
-from test_security_contract import settings as settings
-from test_security_contract import signed
 
 from backend.firebase_client import MemoryStore
 from backend.management import runtime, sandbox
 from backend.pagination import record_page
+from tests.test_security_contract import client as client
+from tests.test_security_contract import settings as settings
+from tests.test_security_contract import signed
 
 
 def test_every_management_operation_has_response_schema(client):
