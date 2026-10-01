@@ -51,14 +51,12 @@ class Document:
 
 class Query:
     def __init__(self, client, path, filters=(), ordering=(), count=None, cursor=None):
-        self.client, self.path, self.filters, self.ordering, self.limit_count, self.cursor = (
-            client,
-            path,
-            filters,
-            ordering,
-            count,
-            cursor,
-        )
+        self.client = client
+        self.path = path
+        self.filters = filters
+        self.ordering = ordering
+        self.limit_count = count
+        self.cursor = cursor
 
     def document(self, name):
         return Document(self.client, self.path + "/" + str(name))
@@ -99,7 +97,12 @@ class Query:
 
     def start_after(self, snapshot):
         return Query(
-            self.client, self.path, self.filters, self.ordering, self.limit_count, snapshot.id
+            self.client,
+            self.path,
+            self.filters,
+            self.ordering,
+            self.limit_count,
+            snapshot.id,
         )
 
     def count(self, alias=None):

@@ -45,7 +45,10 @@ def write_private(path: Path, payload: dict[str, Any]) -> None:
 
 def migrate_snapshot(payload: dict[str, Any]) -> dict[str, Any]:
     if "config" in payload:
-        if set(payload) != {"guildId", "config"} or not str(payload["guildId"]).isdigit():
+        if (
+            set(payload) != {"guildId", "config"}
+            or not str(payload["guildId"]).isdigit()
+        ):
             raise ValueError("Invalid configuration envelope")
         if not isinstance(payload["config"], dict):
             raise ValueError("Invalid configuration envelope")
