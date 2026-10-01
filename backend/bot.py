@@ -1,6 +1,5 @@
 import asyncio
 import copy
-from contextlib import suppress
 import logging
 import mimetypes
 import os
@@ -8,6 +7,7 @@ import random
 import re
 import tempfile
 import unicodedata
+from contextlib import suppress
 from datetime import datetime, timedelta, timezone
 from difflib import SequenceMatcher
 from pathlib import Path
@@ -21,14 +21,6 @@ from .ai_providers import AIProviderError, ask_ai
 from .config import get_settings
 from .google_drive import DriveConfigurationError, drive_media_type
 from .media_stream import build_drive_stream_url
-from .weather import (
-    OpenWeatherClient,
-    WeatherError,
-    extract_weather_location,
-    is_weather_question,
-    natural_weather_reply,
-    weather_fields,
-)
 from .presentation import (
     build_feedback_embed,
     interpret_action,
@@ -37,30 +29,118 @@ from .presentation import (
     send_message_feedback,
     send_message_inline_media_card,
 )
+from .weather import (
+    OpenWeatherClient,
+    WeatherError,
+    extract_weather_location,
+    is_weather_question,
+    natural_weather_reply,
+    weather_fields,
+)
 
 log = logging.getLogger("conan.bot")
 
 
-DEFAULT_ADMIN_ROLE_ID = "1514041404836282460"
+DEFAULT_ADMIN_ROLE_ID = ""
 BotControlCallback = Callable[[str, str, str], Awaitable[dict[str, Any]]]
 
 COMMAND_CATALOG: tuple[dict[str, str], ...] = (
-    {"key": "ping", "name": "ping", "category": "Utility", "description": "Check the Discord websocket latency."},
-    {"key": "help", "name": "help", "category": "Utility", "description": "Show the bot command map."},
-    {"key": "weather", "name": "weather", "category": "Utility", "description": "Show current weather and a short forecast for a place or your saved location."},
-    {"key": "media", "name": "media", "category": "Media", "description": "Send a random image or MP4 from the configured Drive folder."},
-    {"key": "pun", "name": "pun", "category": "AI & fun", "description": "Get a random pun with styled feedback."},
-    {"key": "motivation", "name": "motivation", "category": "AI & fun", "description": "Get a short motivational response."},
-    {"key": "recommend", "name": "recommend", "category": "Music", "description": "Get a Conan-coded song recommendation."},
-    {"key": "lyrics", "name": "lyrics", "category": "Music", "description": "Get a song-vibe card without reproducing full lyrics."},
-    {"key": "coinflip", "name": "coinflip", "category": "Games", "description": "Flip a coin."},
-    {"key": "eightball", "name": "8ball", "category": "Games", "description": "Ask the emotionally suspicious 8-ball."},
-    {"key": "rps", "name": "rps", "category": "Games", "description": "Play Rock Paper Scissors."},
-    {"key": "guesssong", "name": "guesssong", "category": "Games", "description": "Start a reply-driven AI-judged mystery-song round."},
-    {"key": "wouldyourather", "name": "wouldyourather", "category": "Games", "description": "Get a Would You Rather question."},
-    {"key": "tictactoe", "name": "tictactoe", "category": "Games", "description": "Start an interactive tic-tac-toe game."},
-    {"key": "forget", "name": "forget", "category": "Administration", "description": "Clear branch memory for the current channel. Admin only."},
-    {"key": "admin", "name": "admin", "category": "Administration", "description": "Role-gated bot administration command group."},
+    {
+        "key": "ping",
+        "name": "ping",
+        "category": "Utility",
+        "description": "Check the Discord websocket latency.",
+    },
+    {
+        "key": "help",
+        "name": "help",
+        "category": "Utility",
+        "description": "Show the bot command map.",
+    },
+    {
+        "key": "weather",
+        "name": "weather",
+        "category": "Utility",
+        "description": "Show current weather and a short forecast for a place or your saved location.",
+    },
+    {
+        "key": "media",
+        "name": "media",
+        "category": "Media",
+        "description": "Send a random image or MP4 from the configured Drive folder.",
+    },
+    {
+        "key": "pun",
+        "name": "pun",
+        "category": "AI & fun",
+        "description": "Get a random pun with styled feedback.",
+    },
+    {
+        "key": "motivation",
+        "name": "motivation",
+        "category": "AI & fun",
+        "description": "Get a short motivational response.",
+    },
+    {
+        "key": "recommend",
+        "name": "recommend",
+        "category": "Music",
+        "description": "Get a Conan-coded song recommendation.",
+    },
+    {
+        "key": "lyrics",
+        "name": "lyrics",
+        "category": "Music",
+        "description": "Get a song-vibe card without reproducing full lyrics.",
+    },
+    {
+        "key": "coinflip",
+        "name": "coinflip",
+        "category": "Games",
+        "description": "Flip a coin.",
+    },
+    {
+        "key": "eightball",
+        "name": "8ball",
+        "category": "Games",
+        "description": "Ask the emotionally suspicious 8-ball.",
+    },
+    {
+        "key": "rps",
+        "name": "rps",
+        "category": "Games",
+        "description": "Play Rock Paper Scissors.",
+    },
+    {
+        "key": "guesssong",
+        "name": "guesssong",
+        "category": "Games",
+        "description": "Start a reply-driven AI-judged mystery-song round.",
+    },
+    {
+        "key": "wouldyourather",
+        "name": "wouldyourather",
+        "category": "Games",
+        "description": "Get a Would You Rather question.",
+    },
+    {
+        "key": "tictactoe",
+        "name": "tictactoe",
+        "category": "Games",
+        "description": "Start an interactive tic-tac-toe game.",
+    },
+    {
+        "key": "forget",
+        "name": "forget",
+        "category": "Administration",
+        "description": "Clear branch memory for the current channel. Admin only.",
+    },
+    {
+        "key": "admin",
+        "name": "admin",
+        "category": "Administration",
+        "description": "Role-gated bot administration command group.",
+    },
 )
 
 GAME_TEMPLATE_KEYS = {
@@ -101,12 +181,20 @@ class _NoopAsyncContext:
         return False
 
 
-def configured_admin_role_id(config: dict[str, Any], settings: Any | None = None) -> str:
+def configured_admin_role_id(
+    config: dict[str, Any], settings: Any | None = None
+) -> str:
     settings = settings or get_settings()
-    return str(config.get("admin", {}).get("roleId") or settings.staff_role_id or DEFAULT_ADMIN_ROLE_ID)
+    return str(
+        config.get("admin", {}).get("roleId")
+        or settings.staff_role_id
+        or DEFAULT_ADMIN_ROLE_ID
+    )
 
 
-def member_has_admin_role(member: Any, config: dict[str, Any], settings: Any | None = None) -> bool:
+def member_has_admin_role(
+    member: Any, config: dict[str, Any], settings: Any | None = None
+) -> bool:
     role_id = configured_admin_role_id(config, settings)
     roles = getattr(member, "roles", None)
     if not role_id or roles is None:
@@ -142,7 +230,9 @@ def _normalized_phrase(value: Any) -> str:
     return " ".join(unicodedata.normalize("NFKC", str(value or "")).casefold().split())
 
 
-def configured_talkin_wake_words(ai_config: dict[str, Any], bot_user: Any | None = None) -> list[str]:
+def configured_talkin_wake_words(
+    ai_config: dict[str, Any], bot_user: Any | None = None
+) -> list[str]:
     raw = ai_config.get("talkinWakeWords")
     if isinstance(raw, str):
         values = re.split(r"[,\n]+", raw)
@@ -152,11 +242,13 @@ def configured_talkin_wake_words(ai_config: dict[str, Any], bot_user: Any | None
         values = []
     values = [*values, "conan", "conan gray"]
     if bot_user is not None:
-        values.extend([
-            getattr(bot_user, "display_name", ""),
-            getattr(bot_user, "global_name", ""),
-            getattr(bot_user, "name", ""),
-        ])
+        values.extend(
+            [
+                getattr(bot_user, "display_name", ""),
+                getattr(bot_user, "global_name", ""),
+                getattr(bot_user, "name", ""),
+            ]
+        )
     result: list[str] = []
     seen: set[str] = set()
     for value in values:
@@ -168,7 +260,9 @@ def configured_talkin_wake_words(ai_config: dict[str, Any], bot_user: Any | None
     return result[:20]
 
 
-def message_calls_bot_by_name(text: str, ai_config: dict[str, Any], bot_user: Any | None = None) -> bool:
+def message_calls_bot_by_name(
+    text: str, ai_config: dict[str, Any], bot_user: Any | None = None
+) -> bool:
     normalized = _normalized_phrase(text)
     if not normalized:
         return False
@@ -185,10 +279,12 @@ def message_looks_like_unthreaded_question(text: str) -> bool:
         return False
     if "?" in str(text):
         return True
-    return bool(re.match(
-        r"^(?:what|why|when|where|who|which|how|can|could|would|should|do|does|did|is|are|am|was|were|will|have|has|had)\b",
-        value,
-    ))
+    return bool(
+        re.match(
+            r"^(?:what|why|when|where|who|which|how|can|could|would|should|do|does|did|is|are|am|was|were|will|have|has|had)\b",
+            value,
+        )
+    )
 
 
 _RANDOM_TRIGGER_RE = re.compile(r"^\{random(?::(image|video))?\}$", re.IGNORECASE)
@@ -212,7 +308,9 @@ def apply_message_template(
     replacements = {
         "response": response,
         "user": discord_profile_name(message.author),
-        "mention": getattr(message.author, "mention", discord_profile_name(message.author)),
+        "mention": getattr(
+            message.author, "mention", discord_profile_name(message.author)
+        ),
         "channel": getattr(message.channel, "name", "channel"),
         "provider": provider,
         "guild": getattr(message.guild, "name", "server"),
@@ -227,13 +325,15 @@ def apply_message_template(
     return rendered.strip()
 
 
-
-
 def attachment_media_type(attachment: Any) -> tuple[str | None, str]:
     filename = str(getattr(attachment, "filename", "") or "")
-    content_type = str(getattr(attachment, "content_type", "") or "").split(";", 1)[0].lower()
+    content_type = (
+        str(getattr(attachment, "content_type", "") or "").split(";", 1)[0].lower()
+    )
     if not content_type:
-        content_type = (mimetypes.guess_type(filename)[0] or "application/octet-stream").lower()
+        content_type = (
+            mimetypes.guess_type(filename)[0] or "application/octet-stream"
+        ).lower()
     if content_type.startswith("image/"):
         return "image", content_type
     if content_type.startswith("video/"):
@@ -324,9 +424,13 @@ LEGACY_GUESS_SONG_ANSWERS = ["Heather", "Maniac", "People Watching"]
 
 def normalize_guess_text(value: str) -> str:
     normalized = unicodedata.normalize("NFKD", str(value or ""))
-    normalized = "".join(character for character in normalized if not unicodedata.combining(character))
+    normalized = "".join(
+        character for character in normalized if not unicodedata.combining(character)
+    )
     normalized = normalized.casefold().replace("&", " and ")
-    normalized = re.sub(r"\b(?:by\s+conan\s+gray|conan\s+gray(?:'s)?)\b", " ", normalized)
+    normalized = re.sub(
+        r"\b(?:by\s+conan\s+gray|conan\s+gray(?:'s)?)\b", " ", normalized
+    )
     normalized = re.sub(r"[^a-z0-9]+", " ", normalized)
     normalized = re.sub(r"\s+", " ", normalized).strip()
     return normalized
@@ -341,12 +445,18 @@ def configured_guess_song_rounds(games: dict[str, Any]) -> list[dict[str, Any]]:
         if isinstance(raw, dict):
             answer = str(raw.get("answer") or "").strip()
             hint = str(raw.get("hint") or "").strip()
-            aliases = [str(item).strip() for item in raw.get("aliases") or [] if str(item).strip()]
+            aliases = [
+                str(item).strip()
+                for item in raw.get("aliases") or []
+                if str(item).strip()
+            ]
         else:
             parts = [part.strip() for part in str(raw).split("|", 2)]
             if len(parts) == 3:
                 answer, alias_text, hint = parts
-                aliases = [item.strip() for item in alias_text.split(",") if item.strip()]
+                aliases = [
+                    item.strip() for item in alias_text.split(",") if item.strip()
+                ]
             elif len(parts) == 2:
                 answer, hint = parts
             else:
@@ -365,13 +475,22 @@ def configured_guess_song_rounds(games: dict[str, Any]) -> list[dict[str, Any]]:
             break
         text = str(hint).strip()
         if text:
-            rounds.append({"answer": LEGACY_GUESS_SONG_ANSWERS[index], "aliases": [], "hint": text})
+            rounds.append(
+                {
+                    "answer": LEGACY_GUESS_SONG_ANSWERS[index],
+                    "aliases": [],
+                    "hint": text,
+                }
+            )
     return rounds
 
 
 def deterministic_guess_match(answer: str, aliases: list[str], user_guess: str) -> bool:
     guess = normalize_guess_text(user_guess)
-    candidates = [normalize_guess_text(answer), *(normalize_guess_text(alias) for alias in aliases)]
+    candidates = [
+        normalize_guess_text(answer),
+        *(normalize_guess_text(alias) for alias in aliases),
+    ]
     candidates = [candidate for candidate in candidates if candidate]
     if not guess or not candidates:
         return False
@@ -416,7 +535,9 @@ async def judge_guess_reply(
         "If uncertain, return INCORRECT."
     )
     try:
-        timeout_seconds = max(2.0, min(float(games.get("guessSongJudgeTimeoutSeconds") or 8), 20.0))
+        timeout_seconds = max(
+            2.0, min(float(games.get("guessSongJudgeTimeoutSeconds") or 8), 20.0)
+        )
         verdict, provider = await asyncio.wait_for(
             ask_ai(
                 judge_config,
@@ -432,7 +553,12 @@ async def judge_guess_reply(
             return True, f"AI answer judge: {provider}"
         if token == "INCORRECT":
             # An exact normalized title always wins over an accidental model rejection.
-            return exact_or_fuzzy, f"AI answer judge: {provider}" if not exact_or_fuzzy else "Exact title override"
+            return (
+                exact_or_fuzzy,
+                f"AI answer judge: {provider}"
+                if not exact_or_fuzzy
+                else "Exact title override",
+            )
     except Exception:
         pass
     return exact_or_fuzzy, "Deterministic fallback judge"
@@ -452,7 +578,9 @@ def short_id() -> str:
     return "".join(random.choice("ABCDEFGHJKLMNPQRSTUVWXYZ23456789") for _ in range(6))
 
 
-def trim_conversation_history(history: list[dict[str, str]], limit: int) -> list[dict[str, str]]:
+def trim_conversation_history(
+    history: list[dict[str, str]], limit: int
+) -> list[dict[str, str]]:
     """Keep recent complete turns so the model never starts on an orphaned bot reply."""
     safe_limit = max(4, limit)
     trimmed = history[-safe_limit:]
@@ -502,15 +630,21 @@ class ConanBot(commands.Bot):
 
     async def setup_hook(self) -> None:
         try:
-            await self.rebuild_application_commands(self.settings.guild_id or None, sync=True)
+            await self.rebuild_application_commands(
+                self.settings.guild_id or None, sync=True
+            )
         except discord.Forbidden as exc:
             self.command_sync_status = "forbidden"
             self.command_sync_error = f"Forbidden: {exc}"
-            log.warning("Slash command sync failed: missing access. Bot will continue online.")
+            log.warning(
+                "Slash command sync failed: missing access. Bot will continue online."
+            )
         except discord.HTTPException as exc:
             self.command_sync_status = "failed"
             self.command_sync_error = f"{type(exc).__name__}: {exc}"
-            log.warning("Slash command sync failed, but bot will continue online: %s", exc)
+            log.warning(
+                "Slash command sync failed, but bot will continue online: %s", exc
+            )
 
     async def rebuild_application_commands(
         self,
@@ -540,7 +674,11 @@ class ConanBot(commands.Bot):
             self.tree.clear_commands(guild=guild_object)
             self.tree.copy_global_to(guild=guild_object)
             await self.tree.sync(guild=guild_object)
-            log.info("Slash commands synced to guild %s: %s", guild_object.id, ", ".join(registered))
+            log.info(
+                "Slash commands synced to guild %s: %s",
+                guild_object.id,
+                ", ".join(registered),
+            )
         else:
             await self.tree.sync()
             log.info("Slash commands synced globally: %s", ", ".join(registered))
@@ -551,7 +689,9 @@ class ConanBot(commands.Bot):
         return registered
 
     async def on_ready(self) -> None:
-        log.info("Logged in as %s (%s)", self.user, self.user.id if self.user else "unknown")
+        log.info(
+            "Logged in as %s (%s)", self.user, self.user.id if self.user else "unknown"
+        )
         await self.apply_configured_presence()
         if self.spontaneous_chat_task is None or self.spontaneous_chat_task.done():
             self.spontaneous_chat_task = asyncio.create_task(
@@ -572,27 +712,37 @@ class ConanBot(commands.Bot):
 
     @staticmethod
     def _presence_entries(presence: dict[str, Any]) -> list[dict[str, Any]]:
-        raw_entries = presence.get("entries") if isinstance(presence.get("entries"), list) else []
+        raw_entries = (
+            presence.get("entries") if isinstance(presence.get("entries"), list) else []
+        )
         entries: list[dict[str, Any]] = []
         for raw in raw_entries[:20]:
             if not isinstance(raw, dict) or raw.get("enabled", True) is False:
                 continue
-            entries.append({
-                "enabled": True,
-                "status": str(raw.get("status") or "online").lower(),
-                "activityType": str(raw.get("activityType") or "listening").lower(),
-                "activityText": str(raw.get("activityText") or "").strip()[:128],
-                "streamUrl": str(raw.get("streamUrl") or "").strip()[:500],
-            })
+            entries.append(
+                {
+                    "enabled": True,
+                    "status": str(raw.get("status") or "online").lower(),
+                    "activityType": str(raw.get("activityType") or "listening").lower(),
+                    "activityText": str(raw.get("activityText") or "").strip()[:128],
+                    "streamUrl": str(raw.get("streamUrl") or "").strip()[:500],
+                }
+            )
         if entries:
             return entries
-        return [{
-            "enabled": True,
-            "status": str(presence.get("status") or "online").lower(),
-            "activityType": str(presence.get("activityType") or "listening").lower(),
-            "activityText": str(presence.get("activityText") or "dramatic bridge sections").strip()[:128],
-            "streamUrl": str(presence.get("streamUrl") or "").strip()[:500],
-        }]
+        return [
+            {
+                "enabled": True,
+                "status": str(presence.get("status") or "online").lower(),
+                "activityType": str(
+                    presence.get("activityType") or "listening"
+                ).lower(),
+                "activityText": str(
+                    presence.get("activityText") or "dramatic bridge sections"
+                ).strip()[:128],
+                "streamUrl": str(presence.get("streamUrl") or "").strip()[:500],
+            }
+        ]
 
     @staticmethod
     def _presence_status(value: str) -> discord.Status:
@@ -622,7 +772,9 @@ class ConanBot(commands.Bot):
         }.get(activity_type_name, discord.ActivityType.listening)
         return discord.Activity(type=activity_type, name=activity_text)
 
-    async def _apply_presence_entry(self, entry: dict[str, Any], *, index: int = 0) -> None:
+    async def _apply_presence_entry(
+        self, entry: dict[str, Any], *, index: int = 0
+    ) -> None:
         await self.change_presence(
             status=self._presence_status(str(entry.get("status") or "online")),
             activity=self._presence_activity(entry),
@@ -648,7 +800,9 @@ class ConanBot(commands.Bot):
     ) -> None:
         index = 0
         try:
-            while generation == self.presence_rotation_generation and not self.is_closed():
+            while (
+                generation == self.presence_rotation_generation and not self.is_closed()
+            ):
                 await asyncio.sleep(interval_seconds)
                 if generation != self.presence_rotation_generation or self.is_closed():
                     break
@@ -662,7 +816,9 @@ class ConanBot(commands.Bot):
                         entries[index].get("activityText"),
                     )
                 except (discord.HTTPException, RuntimeError):
-                    log.exception("Could not rotate Discord presence for guild %s", guild_id)
+                    log.exception(
+                        "Could not rotate Discord presence for guild %s", guild_id
+                    )
         except asyncio.CancelledError:
             raise
 
@@ -676,16 +832,26 @@ class ConanBot(commands.Bot):
             "current": copy.deepcopy(entry),
         }
 
-    async def apply_configured_presence(self, guild_id: int | str | None = None) -> None:
+    async def apply_configured_presence(
+        self, guild_id: int | str | None = None
+    ) -> None:
         target_guild = str(guild_id or self.settings.guild_id or "global")
         config = await self.store.get_config(target_guild)
-        presence = config.get("presence", {}) if isinstance(config.get("presence"), dict) else {}
+        presence = (
+            config.get("presence", {})
+            if isinstance(config.get("presence"), dict)
+            else {}
+        )
         entries = self._presence_entries(presence)
         try:
-            interval_seconds = max(15, min(86400, int(presence.get("intervalSeconds") or 60)))
+            interval_seconds = max(
+                15, min(86400, int(presence.get("intervalSeconds") or 60))
+            )
         except (TypeError, ValueError):
             interval_seconds = 60
-        rotation_enabled = bool(presence.get("rotationEnabled", False)) and len(entries) > 1
+        rotation_enabled = (
+            bool(presence.get("rotationEnabled", False)) and len(entries) > 1
+        )
 
         await self._stop_presence_rotation()
         self.presence_rotation_guild_id = target_guild
@@ -695,7 +861,9 @@ class ConanBot(commands.Bot):
         if rotation_enabled:
             generation = self.presence_rotation_generation
             self.presence_rotation_task = asyncio.create_task(
-                self._presence_rotation_loop(target_guild, entries, interval_seconds, generation),
+                self._presence_rotation_loop(
+                    target_guild, entries, interval_seconds, generation
+                ),
                 name=f"presence-rotation:{target_guild}",
             )
             log.info(
@@ -723,9 +891,13 @@ class ConanBot(commands.Bot):
         branch_id = "talkin-group"
         lock = self._ai_session_lock(guild_id, channel_id)
         async with lock:
-            session = await self.store.get_branch_session(guild_id, channel_id, branch_id)
+            session = await self.store.get_branch_session(
+                guild_id, channel_id, branch_id
+            )
             history = list(session.get("messages") or [])
-            max_history = max(4, min(int(ai_config.get("maxHistoryMessages") or 36), 80))
+            max_history = max(
+                4, min(int(ai_config.get("maxHistoryMessages") or 36), 80)
+            )
             history = trim_conversation_history(history, max_history)
             prompt = str(ai_config.get("spontaneousPrompt") or "").strip() or (
                 "Start one short, natural group-chat thought. Do not mention automation or inactivity."
@@ -738,7 +910,11 @@ class ConanBot(commands.Bot):
                 "Use recent shared history only when it is genuinely relevant. Do not mention timers, automation, "
                 "the bot, the channel being quiet, or that you were instructed to start a conversation."
             )
-            typing_context = channel.typing() if ai_config.get("typingIndicator", True) and hasattr(channel, "typing") else _NoopAsyncContext()
+            typing_context = (
+                channel.typing()
+                if ai_config.get("typingIndicator", True) and hasattr(channel, "typing")
+                else _NoopAsyncContext()
+            )
             async with typing_context:
                 try:
                     answer, provider = await ask_ai(config, history, prompt, context)
@@ -752,22 +928,28 @@ class ConanBot(commands.Bot):
             try:
                 sent = await channel.send(answer)
             except (discord.HTTPException, discord.Forbidden, AttributeError):
-                log.exception("Could not send a spontaneous Talkin' message in guild %s", guild_id)
+                log.exception(
+                    "Could not send a spontaneous Talkin' message in guild %s", guild_id
+                )
                 return False
 
             sent_id = str(getattr(sent, "id", "") or "")
-            history.append({
-                "role": "system",
-                "content": "Conan naturally started a new group-chat beat without being prompted by a user.",
-                "spontaneous": True,
-            })
-            history.append({
-                "role": "assistant",
-                "content": answer,
-                "messageId": sent_id,
-                "branchId": branch_id,
-                "spontaneous": True,
-            })
+            history.append(
+                {
+                    "role": "system",
+                    "content": "Conan naturally started a new group-chat beat without being prompted by a user.",
+                    "spontaneous": True,
+                }
+            )
+            history.append(
+                {
+                    "role": "assistant",
+                    "content": answer,
+                    "messageId": sent_id,
+                    "branchId": branch_id,
+                    "spontaneous": True,
+                }
+            )
             stored_history = trim_conversation_history(history, max_history)
             retained_message_ids = [
                 str(item.get("messageId") or "")
@@ -802,12 +984,20 @@ class ConanBot(commands.Bot):
             try:
                 config = await self._config_for(guild.id)
                 ai_config = config.get("ai", {})
-                if not ai_config.get("enabled", True) or not ai_config.get("spontaneousConversationEnabled", True):
+                if not ai_config.get("enabled", True) or not ai_config.get(
+                    "spontaneousConversationEnabled", True
+                ):
                     continue
-                channel_id = str(ai_config.get("channelId") or self.settings.ai_channel_id or "")
+                channel_id = str(
+                    ai_config.get("channelId") or self.settings.ai_channel_id or ""
+                )
                 if not channel_id:
                     continue
-                channel = guild.get_channel(int(channel_id)) if hasattr(guild, "get_channel") else None
+                channel = (
+                    guild.get_channel(int(channel_id))
+                    if hasattr(guild, "get_channel")
+                    else None
+                )
                 if channel is None:
                     channel = self.get_channel(int(channel_id))
                 if channel is None or not hasattr(channel, "send"):
@@ -816,18 +1006,31 @@ class ConanBot(commands.Bot):
                 key = f"{guild.id}:{channel_id}"
                 self.talkin_last_activity.setdefault(key, now)
                 self.talkin_last_spontaneous_check.setdefault(key, now)
-                check_minutes = max(1, min(int(ai_config.get("spontaneousCheckMinutes") or 10), 1440))
+                check_minutes = max(
+                    1, min(int(ai_config.get("spontaneousCheckMinutes") or 10), 1440)
+                )
                 if now - self.talkin_last_spontaneous_check[key] < check_minutes * 60:
                     continue
                 self.talkin_last_spontaneous_check[key] = now
 
-                idle_minutes = max(5, min(int(ai_config.get("spontaneousIdleMinutes") or 90), 10080))
-                cooldown_minutes = max(15, min(int(ai_config.get("spontaneousCooldownMinutes") or 240), 43200))
-                chance_percent = max(0.0, min(float(ai_config.get("spontaneousChancePercent") or 0), 100.0))
+                idle_minutes = max(
+                    5, min(int(ai_config.get("spontaneousIdleMinutes") or 90), 10080)
+                )
+                cooldown_minutes = max(
+                    15,
+                    min(int(ai_config.get("spontaneousCooldownMinutes") or 240), 43200),
+                )
+                chance_percent = max(
+                    0.0,
+                    min(float(ai_config.get("spontaneousChancePercent") or 0), 100.0),
+                )
                 if now - self.talkin_last_activity[key] < idle_minutes * 60:
                     continue
                 last_spontaneous = self.talkin_last_spontaneous.get(key)
-                if last_spontaneous is not None and now - last_spontaneous < cooldown_minutes * 60:
+                if (
+                    last_spontaneous is not None
+                    and now - last_spontaneous < cooldown_minutes * 60
+                ):
                     continue
                 if random.random() * 100 >= chance_percent:
                     continue
@@ -837,7 +1040,10 @@ class ConanBot(commands.Bot):
             except asyncio.CancelledError:
                 raise
             except Exception:
-                log.exception("Spontaneous Talkin' check failed for guild %s", getattr(guild, "id", "unknown"))
+                log.exception(
+                    "Spontaneous Talkin' check failed for guild %s",
+                    getattr(guild, "id", "unknown"),
+                )
 
     async def _spontaneous_chat_loop(self) -> None:
         try:
@@ -847,9 +1053,13 @@ class ConanBot(commands.Bot):
         except asyncio.CancelledError:
             raise
 
-    async def request_control(self, action: str, guild_id: int | str, actor_id: int | str) -> dict[str, Any]:
+    async def request_control(
+        self, action: str, guild_id: int | str, actor_id: int | str
+    ) -> dict[str, Any]:
         if not self.control_callback:
-            raise RuntimeError("Bot lifecycle controls are unavailable in this deployment.")
+            raise RuntimeError(
+                "Bot lifecycle controls are unavailable in this deployment."
+            )
         return await self.control_callback(action, str(guild_id), str(actor_id))
 
     async def on_message(self, message: discord.Message) -> None:
@@ -863,7 +1073,9 @@ class ConanBot(commands.Bot):
         await self._handle_media_triggers(message)
         await self.process_commands(message)
 
-    def _guessing_game_lock(self, guild_id: int | str, channel_id: int | str, bot_message_id: int | str) -> asyncio.Lock:
+    def _guessing_game_lock(
+        self, guild_id: int | str, channel_id: int | str, bot_message_id: int | str
+    ) -> asyncio.Lock:
         key = f"{guild_id}:{channel_id}:{bot_message_id}"
         lock = self.guessing_game_locks.get(key)
         if lock is None:
@@ -885,12 +1097,16 @@ class ConanBot(commands.Bot):
 
         guild_id = str(message.guild.id)
         channel_id = str(message.channel.id)
-        state = await self.store.get_guessing_game(guild_id, channel_id, reply_message_id)
+        state = await self.store.get_guessing_game(
+            guild_id, channel_id, reply_message_id
+        )
         if not state:
             return False
 
         async with self._guessing_game_lock(guild_id, channel_id, reply_message_id):
-            state = await self.store.get_guessing_game(guild_id, channel_id, reply_message_id)
+            state = await self.store.get_guessing_game(
+                guild_id, channel_id, reply_message_id
+            )
             if not state:
                 # Another simultaneous answer may have completed the round while this
                 # message waited for the per-game lock. Consume it rather than routing
@@ -899,7 +1115,11 @@ class ConanBot(commands.Bot):
             config = await self._config_for(guild_id)
             games = config.get("games", {})
             starter_id = str(state.get("starterId") or "")
-            if not games.get("guessSongAllowAnyone", True) and starter_id and str(message.author.id) != starter_id:
+            if (
+                not games.get("guessSongAllowAnyone", True)
+                and starter_id
+                and str(message.author.id) != starter_id
+            ):
                 await send_message_feedback(
                     message,
                     config,
@@ -910,7 +1130,9 @@ class ConanBot(commands.Bot):
                 )
                 return True
 
-            user_guess = str(getattr(message, "clean_content", "") or getattr(message, "content", "")).strip()
+            user_guess = str(
+                getattr(message, "clean_content", "") or getattr(message, "content", "")
+            ).strip()
             if not user_guess:
                 await send_message_feedback(
                     message,
@@ -932,28 +1154,49 @@ class ConanBot(commands.Bot):
                 hint=hint,
             )
             attempts = int(state.get("attempts") or 0) + 1
-            max_attempts = max(1, min(int(state.get("maxAttempts") or games.get("guessSongMaxAttempts") or 5), 20))
+            max_attempts = max(
+                1,
+                min(
+                    int(
+                        state.get("maxAttempts")
+                        or games.get("guessSongMaxAttempts")
+                        or 5
+                    ),
+                    20,
+                ),
+            )
             exhausted = not correct and attempts >= max_attempts
             remaining = max(0, max_attempts - attempts)
 
             if correct or exhausted:
-                await self.store.delete_guessing_game(guild_id, channel_id, reply_message_id)
+                await self.store.delete_guessing_game(
+                    guild_id, channel_id, reply_message_id
+                )
             else:
                 state["attempts"] = attempts
-                await self.store.set_guessing_game(guild_id, channel_id, reply_message_id, state)
+                await self.store.set_guessing_game(
+                    guild_id, channel_id, reply_message_id, state
+                )
 
             if correct:
                 outcome = "correct guess"
                 facts = f"The user's guess '{user_guess}' matches the locked answer '{answer}'. Attempt {attempts} of {max_attempts}."
                 title = "You got the song"
                 kind = "success"
-                result_fields = [("Your guess", user_guess, True), ("Song", answer, True), ("Attempts", f"{attempts}/{max_attempts}", True)]
+                result_fields = [
+                    ("Your guess", user_guess, True),
+                    ("Song", answer, True),
+                    ("Attempts", f"{attempts}/{max_attempts}", True),
+                ]
             elif exhausted:
                 outcome = "attempts exhausted"
                 facts = f"The user's guess '{user_guess}' is incorrect. The round ended after {attempts} attempts."
                 title = "The mystery track wins this round"
                 kind = "warning"
-                result_fields = [("Last guess", user_guess, True), ("Attempts", f"{attempts}/{max_attempts}", True)]
+                result_fields = [
+                    ("Last guess", user_guess, True),
+                    ("Attempts", f"{attempts}/{max_attempts}", True),
+                ]
                 if games.get("guessSongRevealOnFailure", True):
                     result_fields.append(("Answer", answer, False))
             else:
@@ -961,7 +1204,15 @@ class ConanBot(commands.Bot):
                 facts = f"The user's guess '{user_guess}' is incorrect. {remaining} attempts remain. Do not reveal the answer."
                 title = "Not quite"
                 kind = "game"
-                result_fields = [("Your guess", user_guess, True), ("Attempts left", str(remaining), True), ("Continue", "Reply to the original clue with another title.", False)]
+                result_fields = [
+                    ("Your guess", user_guess, True),
+                    ("Attempts left", str(remaining), True),
+                    (
+                        "Continue",
+                        "Reply to the original clue with another title.",
+                        False,
+                    ),
+                ]
 
             narration, narration_source = await interpret_action(
                 config,
@@ -999,7 +1250,9 @@ class ConanBot(commands.Bot):
     async def _config_for(self, guild_id: int | str) -> dict[str, Any]:
         return await self.store.get_config(str(guild_id))
 
-    def _ai_session_lock(self, guild_id: int | str, channel_id: int | str) -> asyncio.Lock:
+    def _ai_session_lock(
+        self, guild_id: int | str, channel_id: int | str
+    ) -> asyncio.Lock:
         key = f"{guild_id}:{channel_id}"
         lock = self.ai_session_locks.get(key)
         if lock is None:
@@ -1007,7 +1260,9 @@ class ConanBot(commands.Bot):
             self.ai_session_locks[key] = lock
         return lock
 
-    async def clear_ai_session(self, guild_id: int | str, channel_id: int | str) -> None:
+    async def clear_ai_session(
+        self, guild_id: int | str, channel_id: int | str
+    ) -> None:
         async with self._ai_session_lock(guild_id, channel_id):
             await self.store.clear_session(str(guild_id), str(channel_id))
 
@@ -1020,7 +1275,9 @@ class ConanBot(commands.Bot):
         user_id: int | str,
         explicit_location: str = "",
     ) -> tuple[str, str]:
-        weather_config = config.get("weather", {}) if isinstance(config.get("weather"), dict) else {}
+        weather_config = (
+            config.get("weather", {}) if isinstance(config.get("weather"), dict) else {}
+        )
         explicit = " ".join(str(explicit_location or "").split()).strip()
         if explicit:
             return explicit, "explicit"
@@ -1050,7 +1307,9 @@ class ConanBot(commands.Bot):
         if not isinstance(saved_locations, dict):
             saved_locations = {}
             weather_config["userLocations"] = saved_locations
-        location = report.get("location") if isinstance(report.get("location"), dict) else {}
+        location = (
+            report.get("location") if isinstance(report.get("location"), dict) else {}
+        )
         latitude = float(location.get("latitude") or 0)
         longitude = float(location.get("longitude") or 0)
         saved_locations[str(user_id)] = {
@@ -1066,8 +1325,12 @@ class ConanBot(commands.Bot):
         config: dict[str, Any],
         text: str,
     ) -> bool:
-        weather_config = config.get("weather", {}) if isinstance(config.get("weather"), dict) else {}
-        if not weather_config.get("enabled", True) or not weather_config.get("aiDetectionEnabled", True):
+        weather_config = (
+            config.get("weather", {}) if isinstance(config.get("weather"), dict) else {}
+        )
+        if not weather_config.get("enabled", True) or not weather_config.get(
+            "aiDetectionEnabled", True
+        ):
             return False
         if not is_weather_question(text):
             return False
@@ -1091,15 +1354,24 @@ class ConanBot(commands.Bot):
                 forecast_hours=int(weather_config.get("forecastHours") or 12),
             )
         except WeatherError as exc:
-            await message.reply(f"weather betrayed me for a second. {str(exc).lower()}", mention_author=False)
+            await message.reply(
+                f"weather betrayed me for a second. {str(exc).lower()}",
+                mention_author=False,
+            )
             await self.store.add_log(
                 str(message.guild.id),
                 "weather.failed",
-                {"channelId": str(message.channel.id), "authorId": str(message.author.id), "code": exc.code},
+                {
+                    "channelId": str(message.channel.id),
+                    "authorId": str(message.author.id),
+                    "code": exc.code,
+                },
             )
             return True
 
-        reply = natural_weather_reply(report, details=bool(weather_config.get("showDetails", True)))
+        reply = natural_weather_reply(
+            report, details=bool(weather_config.get("showDetails", True))
+        )
         reply = f"{reply}\n-# weather data © openweather"
         await message.reply(reply[:2000], mention_author=False)
         await self.store.add_log(
@@ -1122,10 +1394,16 @@ class ConanBot(commands.Bot):
 
         guild_id = str(message.guild.id)
         channel_key = str(message.channel.id)
-        talkin_channel_id = str(ai_config.get("channelId") or self.settings.ai_channel_id or "")
+        talkin_channel_id = str(
+            ai_config.get("channelId") or self.settings.ai_channel_id or ""
+        )
         is_talkin_channel = bool(talkin_channel_id and channel_key == talkin_channel_id)
 
-        raw_text = str(getattr(message, "clean_content", "") or getattr(message, "content", "") or "")
+        raw_text = str(
+            getattr(message, "clean_content", "")
+            or getattr(message, "content", "")
+            or ""
+        )
         is_mentioned = self.user is not None and self.user in message.mentions
         name_call = bool(
             is_talkin_channel
@@ -1142,13 +1420,29 @@ class ConanBot(commands.Bot):
                 or getattr(resolved_reply, "id", "")
                 or ""
             )
-            if resolved_reply is None and reply_message_id and hasattr(message.channel, "fetch_message"):
+            if (
+                resolved_reply is None
+                and reply_message_id
+                and hasattr(message.channel, "fetch_message")
+            ):
                 try:
-                    resolved_reply = await message.channel.fetch_message(int(reply_message_id))
-                except (discord.HTTPException, discord.NotFound, discord.Forbidden, TypeError, ValueError):
+                    resolved_reply = await message.channel.fetch_message(
+                        int(reply_message_id)
+                    )
+                except (
+                    discord.HTTPException,
+                    discord.NotFound,
+                    discord.Forbidden,
+                    TypeError,
+                    ValueError,
+                ):
                     resolved_reply = None
 
-        resolved_author = getattr(resolved_reply, "author", None) if resolved_reply is not None else None
+        resolved_author = (
+            getattr(resolved_reply, "author", None)
+            if resolved_reply is not None
+            else None
+        )
         bot_user_id = str(getattr(self.user, "id", "") or "")
         resolved_author_id = str(getattr(resolved_author, "id", "") or "")
         reply_to_bot = bool(bot_user_id and resolved_author_id == bot_user_id)
@@ -1165,7 +1459,9 @@ class ConanBot(commands.Bot):
         )
 
         reset_keyword = str(ai_config.get("resetKeyword") or "").strip().lower()
-        is_reset_request = bool(reset_keyword and raw_text.strip().lower() == reset_keyword)
+        is_reset_request = bool(
+            reset_keyword and raw_text.strip().lower() == reset_keyword
+        )
         activation_reason = ""
 
         if is_talkin_channel:
@@ -1173,8 +1469,14 @@ class ConanBot(commands.Bot):
             if raw_text.strip().lower().startswith("c!"):
                 return
 
-            activation_mode = str(ai_config.get("talkinActivationMode") or "direct_calls").strip().lower()
-            bot_reply_call = bool(ai_config.get("talkinRespondToBotReplies", True) and reply_to_bot)
+            activation_mode = (
+                str(ai_config.get("talkinActivationMode") or "direct_calls")
+                .strip()
+                .lower()
+            )
+            bot_reply_call = bool(
+                ai_config.get("talkinRespondToBotReplies", True) and reply_to_bot
+            )
             implicit_question = bool(
                 activation_mode == "direct_calls_and_questions"
                 and not message.reference
@@ -1190,7 +1492,12 @@ class ConanBot(commands.Bot):
                 and not is_reset_request
             ):
                 return
-            if not (explicit_call or implicit_question or legacy_all_messages or is_reset_request):
+            if not (
+                explicit_call
+                or implicit_question
+                or legacy_all_messages
+                or is_reset_request
+            ):
                 return
 
             if is_mentioned:
@@ -1200,26 +1507,37 @@ class ConanBot(commands.Bot):
             elif name_call:
                 activation_reason = "the speaker calling your name"
             elif implicit_question:
-                activation_reason = "an unthreaded question allowed by the channel settings"
+                activation_reason = (
+                    "an unthreaded question allowed by the channel settings"
+                )
             elif legacy_all_messages:
                 activation_reason = "legacy every-message mode"
             else:
                 activation_reason = "the configured reset keyword"
         else:
-            if not authorized_category_id or category_id != authorized_category_id or not is_mentioned:
+            if (
+                not authorized_category_id
+                or category_id != authorized_category_id
+                or not is_mentioned
+            ):
                 return
             activation_reason = "a direct @mention in an authorized channel"
 
         mapped_reply_branch = None
         if reply_message_id and ai_config.get("replyContinuesBranch", True):
-            mapped_reply_branch = await self.store.resolve_reply_branch(guild_id, channel_key, reply_message_id)
+            mapped_reply_branch = await self.store.resolve_reply_branch(
+                guild_id, channel_key, reply_message_id
+            )
 
         text = raw_text
         if self.user:
             user_id = str(getattr(self.user, "id", "") or "")
             if user_id:
                 text = re.sub(rf"<@!?{re.escape(user_id)}>", "", text)
-            for bot_name in {getattr(self.user, "display_name", ""), getattr(self.user, "name", "")}:
+            for bot_name in {
+                getattr(self.user, "display_name", ""),
+                getattr(self.user, "name", ""),
+            }:
                 if bot_name:
                     text = re.sub(rf"@?{re.escape(bot_name)}", "", text, flags=re.I)
             for wake_word in configured_talkin_wake_words(ai_config, self.user):
@@ -1239,7 +1557,9 @@ class ConanBot(commands.Bot):
                 or "The user only called your name. Reply with a tiny natural acknowledgement."
             )
 
-        async def send_runtime_notice(content: str, *, kind: str = "warning", title: str = "Conan paused") -> None:
+        async def send_runtime_notice(
+            content: str, *, kind: str = "warning", title: str = "Conan paused"
+        ) -> None:
             if is_talkin_channel and ai_config.get("talkinPlainReplies", True):
                 await message.reply(content, mention_author=False)
                 return
@@ -1252,31 +1572,54 @@ class ConanBot(commands.Bot):
             )
 
         if is_reset_request:
-            if ai_config.get("resetKeywordAdminOnly", True) and not member_has_admin_role(message.author, config, self.settings):
-                denied = config.get("admin", {}).get("deniedMessage") or "You need the configured bot-admin role to do that."
+            if ai_config.get(
+                "resetKeywordAdminOnly", True
+            ) and not member_has_admin_role(message.author, config, self.settings):
+                denied = (
+                    config.get("admin", {}).get("deniedMessage")
+                    or "You need the configured bot-admin role to do that."
+                )
                 await send_message_feedback(
                     message,
                     config,
                     title="Memory reset denied",
                     description=str(denied),
                     kind="error",
-                    fields=[("Required role", f"<@&{configured_admin_role_id(config, self.settings)}>", False)],
+                    fields=[
+                        (
+                            "Required role",
+                            f"<@&{configured_admin_role_id(config, self.settings)}>",
+                            False,
+                        )
+                    ],
                 )
                 return
             await self.clear_ai_session(message.guild.id, message.channel.id)
-            cleared = config.get("admin", {}).get("memoryClearedMessage") or "Shared memory for this channel has been cleared."
+            cleared = (
+                config.get("admin", {}).get("memoryClearedMessage")
+                or "Shared memory for this channel has been cleared."
+            )
             await send_message_feedback(
                 message,
                 config,
-                title="Group memory cleared" if is_talkin_channel else "Branch memory cleared",
+                title="Group memory cleared"
+                if is_talkin_channel
+                else "Branch memory cleared",
                 description=str(cleared),
                 kind="admin",
-                fields=[("Scope", "Current channel", True), ("Status", "Cleared", True)],
+                fields=[
+                    ("Scope", "Current channel", True),
+                    ("Status", "Cleared", True),
+                ],
             )
             await self.store.add_log(
                 guild_id,
                 "memory.cleared",
-                {"channelId": channel_key, "source": "keyword", "actorId": str(message.author.id)},
+                {
+                    "channelId": channel_key,
+                    "source": "keyword",
+                    "actorId": str(message.author.id),
+                },
             )
             return
 
@@ -1292,14 +1635,22 @@ class ConanBot(commands.Bot):
             until = self.ai_cooldowns.get(cooldown_key, 0)
             if now < until:
                 remaining = round(until - now)
-                await send_runtime_notice(f"Give me about {remaining} more seconds, then send that again.")
+                await send_runtime_notice(
+                    f"Give me about {remaining} more seconds, then send that again."
+                )
                 return
             self.ai_cooldowns[cooldown_key] = now + cooldown
 
         lock = self._ai_session_lock(message.guild.id, message.channel.id)
         async with lock:
-            talkin_group_mode = is_talkin_channel and bool(ai_config.get("talkinGroupMode", True))
-            shared_channel_memory = True if talkin_group_mode else bool(ai_config.get("sharedChannelMemory", True))
+            talkin_group_mode = is_talkin_channel and bool(
+                ai_config.get("talkinGroupMode", True)
+            )
+            shared_channel_memory = (
+                True
+                if talkin_group_mode
+                else bool(ai_config.get("sharedChannelMemory", True))
+            )
             mention_starts_branch = bool(ai_config.get("mentionStartsNewBranch", True))
             reply_continues_branch = bool(ai_config.get("replyContinuesBranch", True))
             branch_reason = "shared_channel"
@@ -1307,7 +1658,9 @@ class ConanBot(commands.Bot):
 
             if talkin_group_mode:
                 branch_id = "talkin-group"
-                session = await self.store.get_branch_session(guild_id, channel_key, branch_id)
+                session = await self.store.get_branch_session(
+                    guild_id, channel_key, branch_id
+                )
                 root_message_id = str(session.get("rootMessageId") or message.id)
                 branch_reason = f"talkin_{activation_reason.replace(' ', '_')}"
             elif is_mentioned and mention_starts_branch:
@@ -1317,11 +1670,15 @@ class ConanBot(commands.Bot):
             elif reply_message_id and reply_continues_branch:
                 branch_id = mapped_reply_branch
                 if not branch_id and shared_channel_memory:
-                    branch_id = await self.store.get_active_branch(guild_id, channel_key)
+                    branch_id = await self.store.get_active_branch(
+                        guild_id, channel_key
+                    )
                     if branch_id:
                         branch_reason = "active_shared_branch_fallback"
                 if branch_id:
-                    session = await self.store.get_branch_session(guild_id, channel_key, branch_id)
+                    session = await self.store.get_branch_session(
+                        guild_id, channel_key, branch_id
+                    )
                     root_message_id = str(session.get("rootMessageId") or message.id)
                     if branch_reason == "shared_channel":
                         branch_reason = "shared_reply_continued"
@@ -1330,17 +1687,25 @@ class ConanBot(commands.Bot):
                     session = {"messages": [], "rootMessageId": root_message_id}
                     branch_reason = "untracked_reply_started"
             else:
-                branch_id = await self.store.get_active_branch(guild_id, channel_key) if shared_channel_memory else None
+                branch_id = (
+                    await self.store.get_active_branch(guild_id, channel_key)
+                    if shared_channel_memory
+                    else None
+                )
                 if not branch_id:
                     branch_id = "shared"
-                session = await self.store.get_branch_session(guild_id, channel_key, branch_id)
+                session = await self.store.get_branch_session(
+                    guild_id, channel_key, branch_id
+                )
                 root_message_id = str(session.get("rootMessageId") or message.id)
 
             if shared_channel_memory:
                 await self.store.set_active_branch(guild_id, channel_key, branch_id)
 
             history = list(session.get("messages") or [])
-            max_history = max(4, min(int(ai_config.get("maxHistoryMessages") or 36), 80))
+            max_history = max(
+                4, min(int(ai_config.get("maxHistoryMessages") or 36), 80)
+            )
             history = trim_conversation_history(history, max_history)
             profile_name = discord_profile_name(message.author)
             user_line = f"{profile_name}: {text}"
@@ -1390,7 +1755,11 @@ class ConanBot(commands.Bot):
                     + reply_note
                 )
 
-            typing_context = message.channel.typing() if ai_config.get("typingIndicator", True) else _NoopAsyncContext()
+            typing_context = (
+                message.channel.typing()
+                if ai_config.get("typingIndicator", True)
+                else _NoopAsyncContext()
+            )
             async with typing_context:
                 try:
                     answer, provider = await ask_ai(config, history, user_line, context)
@@ -1400,15 +1769,25 @@ class ConanBot(commands.Bot):
                         kind="error",
                         title="The AI went off-script",
                     )
-                    await self.store.add_log(guild_id, "ai.failed", {"channelId": channel_key, "branchId": branch_id})
+                    await self.store.add_log(
+                        guild_id,
+                        "ai.failed",
+                        {"channelId": channel_key, "branchId": branch_id},
+                    )
                     return
 
-            talkin_plain = talkin_group_mode and bool(ai_config.get("talkinPlainReplies", True))
-            rendered_answer = answer if talkin_plain else apply_message_template(
-                str(ai_config.get("messageTemplate") or "{response}"),
-                answer,
-                message,
-                provider,
+            talkin_plain = talkin_group_mode and bool(
+                ai_config.get("talkinPlainReplies", True)
+            )
+            rendered_answer = (
+                answer
+                if talkin_plain
+                else apply_message_template(
+                    str(ai_config.get("messageTemplate") or "{response}"),
+                    answer,
+                    message,
+                    provider,
+                )
             )
             sent_messages = await send_styled_reply(
                 message,
@@ -1433,7 +1812,9 @@ class ConanBot(commands.Bot):
                     "authorName": profile_name,
                     "messageId": str(message.id),
                     "replyTargetAuthorId": resolved_author_id,
-                    "replyTargetAuthorName": discord_profile_name(resolved_author) if resolved_author is not None else "",
+                    "replyTargetAuthorName": discord_profile_name(resolved_author)
+                    if resolved_author is not None
+                    else "",
                     "activationReason": activation_reason,
                     "branchId": branch_id,
                 }
@@ -1477,7 +1858,9 @@ class ConanBot(commands.Bot):
                     "authorId": str(message.author.id),
                     "replyTargetAuthorId": resolved_author_id,
                     "latestBotMessageId": latest_bot_message_id,
-                    "delivery": "talkin_plain_reply" if talkin_plain else "styled_reply",
+                    "delivery": "talkin_plain_reply"
+                    if talkin_plain
+                    else "styled_reply",
                 },
             )
 
@@ -1500,14 +1883,22 @@ class ConanBot(commands.Bot):
             await self.store.add_log(
                 str(message.guild.id),
                 "media.skipped",
-                {"reason": "missing_drive_folder", "channelId": str(message.channel.id)},
+                {
+                    "reason": "missing_drive_folder",
+                    "channelId": str(message.channel.id),
+                },
             )
             return
-        if self.drive_archive is None or not getattr(self.drive_archive, "configured", False):
+        if self.drive_archive is None or not getattr(
+            self.drive_archive, "configured", False
+        ):
             await self.store.add_log(
                 str(message.guild.id),
                 "media.failed",
-                {"reason": "drive_not_configured", "channelId": str(message.channel.id)},
+                {
+                    "reason": "drive_not_configured",
+                    "channelId": str(message.channel.id),
+                },
             )
             if media_config.get("notifyOnFailure", True):
                 await send_message_feedback(
@@ -1516,11 +1907,21 @@ class ConanBot(commands.Bot):
                     title="Media archive unavailable",
                     description="Google Drive credentials are not configured for media archiving.",
                     kind="error",
-                    fields=[("Next step", "Open Media → Google Drive in the dashboard and verify the service-account setup.", False)],
+                    fields=[
+                        (
+                            "Next step",
+                            "Open Media → Google Drive in the dashboard and verify the service-account setup.",
+                            False,
+                        )
+                    ],
                 )
             return
 
-        max_bytes = max(1, min(int(media_config.get("maxFileSizeMb") or 100), 2048)) * 1024 * 1024
+        max_bytes = (
+            max(1, min(int(media_config.get("maxFileSizeMb") or 100), 2048))
+            * 1024
+            * 1024
+        )
         uploaded = 0
         failed = 0
         guild_id = str(message.guild.id)
@@ -1553,11 +1954,16 @@ class ConanBot(commands.Bot):
             temp_path = ""
             try:
                 suffix = Path(str(getattr(attachment, "filename", "") or "")).suffix
-                with tempfile.NamedTemporaryFile(prefix="conan-media-", suffix=suffix, delete=False) as temporary:
+                with tempfile.NamedTemporaryFile(
+                    prefix="conan-media-", suffix=suffix, delete=False
+                ) as temporary:
                     temp_path = temporary.name
                 await attachment.save(temp_path, use_cached=True)
                 drive_name = render_media_filename(
-                    str(media_config.get("fileNameTemplate") or "{date}_{messageId}_{filename}"),
+                    str(
+                        media_config.get("fileNameTemplate")
+                        or "{date}_{messageId}_{filename}"
+                    ),
                     attachment,
                     message,
                 )
@@ -1579,7 +1985,9 @@ class ConanBot(commands.Bot):
                     {
                         "driveFileId": str(drive_file.get("id") or ""),
                         "name": str(drive_file.get("name") or drive_name),
-                        "originalName": str(getattr(attachment, "filename", drive_name)),
+                        "originalName": str(
+                            getattr(attachment, "filename", drive_name)
+                        ),
                         "mimeType": str(drive_file.get("mimeType") or mime_type),
                         "mediaType": media_type,
                         "size": int(drive_file.get("size") or size),
@@ -1592,8 +2000,12 @@ class ConanBot(commands.Bot):
                         "webViewLink": str(drive_file.get("webViewLink") or ""),
                         "webContentLink": str(drive_file.get("webContentLink") or ""),
                         "thumbnailLink": str(drive_file.get("thumbnailLink") or ""),
-                        "publicContentUrl": str(drive_file.get("publicContentUrl") or ""),
-                        "publicThumbnailUrl": str(drive_file.get("publicThumbnailUrl") or ""),
+                        "publicContentUrl": str(
+                            drive_file.get("publicContentUrl") or ""
+                        ),
+                        "publicThumbnailUrl": str(
+                            drive_file.get("publicThumbnailUrl") or ""
+                        ),
                         "public": bool(drive_file.get("public", False)),
                     },
                 )
@@ -1629,14 +2041,20 @@ class ConanBot(commands.Bot):
                         pass
 
         if uploaded and media_config.get("notifyOnUpload", False):
-            template = str(media_config.get("successMessageTemplate") or "Archived {count} media file(s) to Google Drive.")
+            template = str(
+                media_config.get("successMessageTemplate")
+                or "Archived {count} media file(s) to Google Drive."
+            )
             await send_message_feedback(
                 message,
                 config,
                 title="Media archived",
                 description=template.replace("{count}", str(uploaded)),
                 kind="media",
-                fields=[("Uploaded", str(uploaded), True), ("Destination", "Google Drive", True)],
+                fields=[
+                    ("Uploaded", str(uploaded), True),
+                    ("Destination", "Google Drive", True),
+                ],
             )
         if failed and media_config.get("notifyOnFailure", True):
             template = str(
@@ -1654,8 +2072,14 @@ class ConanBot(commands.Bot):
 
     async def _handle_media_triggers(self, message: discord.Message) -> None:
         config = await self._config_for(message.guild.id)
-        allowed_category_id = str(config.get("games", {}).get("allowedCategoryId") or self.settings.allowed_category_id)
-        if allowed_category_id and str(getattr(message.channel, "category_id", "")) != allowed_category_id:
+        allowed_category_id = str(
+            config.get("games", {}).get("allowedCategoryId")
+            or self.settings.allowed_category_id
+        )
+        if (
+            allowed_category_id
+            and str(getattr(message.channel, "category_id", "")) != allowed_category_id
+        ):
             return
 
         content = message.content.lower()
@@ -1700,16 +2124,27 @@ async def send_styled_reply(
     appearance = config.get("appearance", {})
     ai_config = config.get("ai", {})
     presentation = config.get("presentation", {})
-    ai_template_embed = bool(config.get("messageTemplates", {}).get("ai", {}).get("useEmbed", True))
-    reply_style = "plain" if force_plain else (
-        "embed" if presentation.get("embedEverywhere", True) and ai_template_embed else str(
-            ai_config.get("replyStyle") or ("embed" if ai_config.get("embedReplies", True) else "plain")
+    ai_template_embed = bool(
+        config.get("messageTemplates", {}).get("ai", {}).get("useEmbed", True)
+    )
+    reply_style = (
+        "plain"
+        if force_plain
+        else (
+            "embed"
+            if presentation.get("embedEverywhere", True) and ai_template_embed
+            else str(
+                ai_config.get("replyStyle")
+                or ("embed" if ai_config.get("embedReplies", True) else "plain")
+            )
         )
     )
     max_length = int(ai_config.get("maxDiscordMessageLength") or 1900)
     split_long = ai_config.get("splitLongReplies", True)
     chunk_limit = min(max_length, 3900 if reply_style == "embed" else 2000)
-    chunks = split_discord_text(text, chunk_limit) if split_long else [text[:chunk_limit]]
+    chunks = (
+        split_discord_text(text, chunk_limit) if split_long else [text[:chunk_limit]]
+    )
     mention_author = (
         bool(ai_config.get("mentionAuthor", False))
         if mention_author_override is None
@@ -1719,10 +2154,16 @@ async def send_styled_reply(
     sent_messages: list[Any] = []
     for index, chunk in enumerate(chunks):
         if reply_style == "plain":
-            sent = await message.reply(chunk, mention_author=mention_author if index == 0 else False)
+            sent = await message.reply(
+                chunk, mention_author=mention_author if index == 0 else False
+            )
         else:
             configured_title = str(appearance.get("embedTitle") or "").strip()
-            title = configured_title or ("A note from the control room" if len(chunks) == 1 else f"A note from the control room · {index + 1}/{len(chunks)}")
+            title = configured_title or (
+                "A note from the control room"
+                if len(chunks) == 1
+                else f"A note from the control room · {index + 1}/{len(chunks)}"
+            )
             embed = build_feedback_embed(
                 config,
                 title=title,
@@ -1737,7 +2178,9 @@ async def send_styled_reply(
                     "guild": getattr(message.guild, "name", "server"),
                 },
             )
-            sent = await message.reply(embed=embed, mention_author=mention_author if index == 0 else False)
+            sent = await message.reply(
+                embed=embed, mention_author=mention_author if index == 0 else False
+            )
         if sent is not None:
             sent_messages.append(sent)
     return sent_messages
@@ -1763,7 +2206,10 @@ async def send_trigger(
             description="Use `{random}`, `{random:image}`, or `{random:video}` in the trigger's Media source field.",
             kind="warning",
             template_key="trigger",
-            fields=[("Trigger", f"`{trigger_word}`", True), ("Received", media_source[:200], True)],
+            fields=[
+                ("Trigger", f"`{trigger_word}`", True),
+                ("Received", media_source[:200], True),
+            ],
         )
         return {"mediaSource": media_source, "mediaStatus": "invalid_token"}
 
@@ -1822,7 +2268,10 @@ async def send_random_trigger_media(
             description="Set and test the Google Drive folder on the dashboard before using a random trigger.",
             kind="warning",
             template_key="trigger",
-            fields=[("Trigger", f"`{trigger_word}`", True), ("Source", source_token, True)],
+            fields=[
+                ("Trigger", f"`{trigger_word}`", True),
+                ("Source", source_token, True),
+            ],
         )
         return {"mediaSource": source_token, "mediaStatus": "folder_missing"}
 
@@ -1834,7 +2283,10 @@ async def send_random_trigger_media(
             description="The backend does not have a complete Google Drive authentication configuration.",
             kind="error",
             template_key="trigger",
-            fields=[("Trigger", f"`{trigger_word}`", True), ("Source", source_token, True)],
+            fields=[
+                ("Trigger", f"`{trigger_word}`", True),
+                ("Source", source_token, True),
+            ],
         )
         return {"mediaSource": source_token, "mediaStatus": "drive_unavailable"}
 
@@ -1868,12 +2320,21 @@ async def send_random_trigger_media(
             description=f"Google Drive returned {type(exc).__name__}. Check the Drive connection and bot logs.",
             kind="error",
             template_key="trigger",
-            fields=[("Trigger", f"`{trigger_word}`", True), ("Source", source_token, True)],
+            fields=[
+                ("Trigger", f"`{trigger_word}`", True),
+                ("Source", source_token, True),
+            ],
         )
         return {"mediaSource": source_token, "mediaStatus": "lookup_failed"}
 
     if not selected:
-        label = "MP4 videos" if requested_type == "video" else "supported images" if requested_type == "image" else "supported media"
+        label = (
+            "MP4 videos"
+            if requested_type == "video"
+            else "supported images"
+            if requested_type == "image"
+            else "supported media"
+        )
         await send_message_feedback(
             message,
             config,
@@ -1891,10 +2352,19 @@ async def send_random_trigger_media(
 
     file_name = Path(str(selected.get("name") or "media")).name
     file_id = str(selected.get("id") or "")
-    selected_type = str(selected.get("mediaType") or drive_media_type(selected) or requested_type or "media")
+    selected_type = str(
+        selected.get("mediaType")
+        or drive_media_type(selected)
+        or requested_type
+        or "media"
+    )
     file_size = int(selected.get("size") or 0)
-    configured_limit = max(1, int(media_config.get("randomCommandMaxFileSizeMb") or 25)) * 1024 * 1024
-    guild_limit = int(getattr(message.guild, "filesize_limit", configured_limit) or configured_limit)
+    configured_limit = (
+        max(1, int(media_config.get("randomCommandMaxFileSizeMb") or 25)) * 1024 * 1024
+    )
+    guild_limit = int(
+        getattr(message.guild, "filesize_limit", configured_limit) or configured_limit
+    )
     upload_limit = min(configured_limit, guild_limit)
     fields = [
         ("Trigger", f"`{trigger_word}`", True),
@@ -1938,7 +2408,9 @@ async def send_random_trigger_media(
             actor=message.author,
             source_note="Random Drive trigger • secure stream",
             image_url=stream_url if selected_type == "image" else None,
-            thumbnail_url=str(selected.get("thumbnailLink") or "") if selected_type == "video" else None,
+            thumbnail_url=str(selected.get("thumbnailLink") or "")
+            if selected_type == "video"
+            else None,
             context=template_context,
         )
         send_kwargs: dict[str, Any] = {"embed": embed}
@@ -1962,19 +2434,26 @@ async def send_random_trigger_media(
     suffix = Path(file_name).suffix or (".mp4" if selected_type == "video" else ".jpg")
     temp_path = ""
     try:
-        with tempfile.NamedTemporaryFile(prefix="conan-trigger-media-", suffix=suffix, delete=False) as handle:
+        with tempfile.NamedTemporaryFile(
+            prefix="conan-trigger-media-", suffix=suffix, delete=False
+        ) as handle:
             temp_path = handle.name
         await drive_archive.download_file(file_id, temp_path)
         actual_size = Path(temp_path).stat().st_size
         if actual_size > upload_limit:
             return await send_as_secure_stream(actual_size)
 
-        safe_attachment_name = re.sub(r"[^A-Za-z0-9._ -]+", "_", file_name).strip() or f"media{suffix}"
+        safe_attachment_name = (
+            re.sub(r"[^A-Za-z0-9._ -]+", "_", file_name).strip() or f"media{suffix}"
+        )
         actual_size_text = format_file_size(actual_size)
         template_context["size"] = actual_size_text
         fields[3] = ("Size", actual_size_text, True)
         actor_name = discord_profile_name(message.author)
-        alt_template = str(media_config.get("videoAltTextTemplate") or "{filename} · requested by {actor}")
+        alt_template = str(
+            media_config.get("videoAltTextTemplate")
+            or "{filename} · requested by {actor}"
+        )
         media_alt = (
             alt_template.replace("{filename}", file_name)
             .replace("{actor}", actor_name)
@@ -1982,7 +2461,11 @@ async def send_random_trigger_media(
             .replace("{size}", actual_size_text)
         )[:1024]
 
-        if selected_type == "video" and str(media_config.get("videoDisplayMode") or "embed_attachment") == "inline_card":
+        if (
+            selected_type == "video"
+            and str(media_config.get("videoDisplayMode") or "embed_attachment")
+            == "inline_card"
+        ):
             try:
                 await send_message_inline_media_card(
                     message,
@@ -1999,8 +2482,12 @@ async def send_random_trigger_media(
                     context=template_context,
                 )
             except Exception:
-                log.exception("Inline random-trigger video failed; falling back to embed plus native attachment")
-                attachment = discord.File(temp_path, filename=safe_attachment_name, description=media_alt)
+                log.exception(
+                    "Inline random-trigger video failed; falling back to embed plus native attachment"
+                )
+                attachment = discord.File(
+                    temp_path, filename=safe_attachment_name, description=media_alt
+                )
                 try:
                     embed = build_feedback_embed(
                         config,
@@ -2018,9 +2505,15 @@ async def send_random_trigger_media(
                 finally:
                     attachment.close()
         else:
-            attachment = discord.File(temp_path, filename=safe_attachment_name, description=media_alt)
+            attachment = discord.File(
+                temp_path, filename=safe_attachment_name, description=media_alt
+            )
             try:
-                image_url = f"attachment://{safe_attachment_name}" if selected_type == "image" else None
+                image_url = (
+                    f"attachment://{safe_attachment_name}"
+                    if selected_type == "image"
+                    else None
+                )
                 embed = build_feedback_embed(
                     config,
                     title="A media cue just fired",
@@ -2031,7 +2524,9 @@ async def send_random_trigger_media(
                     actor=message.author,
                     source_note="Random Drive trigger",
                     image_url=image_url,
-                    thumbnail_url=str(selected.get("thumbnailLink") or "") if selected_type == "video" else None,
+                    thumbnail_url=str(selected.get("thumbnailLink") or "")
+                    if selected_type == "video"
+                    else None,
                     context=template_context,
                 )
                 await message.channel.send(file=attachment, embed=embed)
@@ -2051,7 +2546,9 @@ async def send_random_trigger_media(
             message,
             config,
             title="Could not send the random media",
-            description=str(exc) if isinstance(exc, ValueError) else "The selected file could not be downloaded or attached to Discord.",
+            description=str(exc)
+            if isinstance(exc, ValueError)
+            else "The selected file could not be downloaded or attached to Discord.",
             kind="error",
             template_key="trigger",
             fields=fields,
@@ -2147,7 +2644,9 @@ def make_ping_command(bot: ConanBot) -> app_commands.Command:
             return
         config = await get_interaction_config(interaction)
         ms = round(bot.latency * 1000)
-        quality = "Excellent" if ms < 100 else "Good" if ms < 220 else "A little cinematic"
+        quality = (
+            "Excellent" if ms < 100 else "Good" if ms < 220 else "A little cinematic"
+        )
         await send_action_result(
             interaction,
             config,
@@ -2155,7 +2654,11 @@ def make_ping_command(bot: ConanBot) -> app_commands.Command:
             title="Signal check",
             outcome="online",
             facts=f"The Discord connection is online with {ms} milliseconds of latency.",
-            fields=[("Connection", "Online", True), ("Latency", f"{ms} ms", True), ("Quality", quality, True)],
+            fields=[
+                ("Connection", "Online", True),
+                ("Latency", f"{ms} ms", True),
+                ("Quality", quality, True),
+            ],
             kind="success",
         )
 
@@ -2176,10 +2679,26 @@ def make_help_command(bot: ConanBot) -> app_commands.Command:
             outcome="command list",
             facts="The bot offers AI branch conversations, utility commands, Drive-backed media pulls, music prompts, and six configurable games.",
             fields=[
-                ("Conversation", "`@mention` starts a fresh branch. Reply to the newest bot message to continue it.", False),
-                ("Quick commands", "`/ping` · `/weather` · `/media` · `/pun` · `/motivation` · `/recommend` · `/lyrics`", False),
-                ("Games", "`/tictactoe` · `/coinflip` · `/8ball` · `/rps` · `/guesssong` · `/wouldyourather`", False),
-                ("Admin", "`/admin` and `/forget` require the configured admin role.", False),
+                (
+                    "Conversation",
+                    "`@mention` starts a fresh branch. Reply to the newest bot message to continue it.",
+                    False,
+                ),
+                (
+                    "Quick commands",
+                    "`/ping` · `/weather` · `/media` · `/pun` · `/motivation` · `/recommend` · `/lyrics`",
+                    False,
+                ),
+                (
+                    "Games",
+                    "`/tictactoe` · `/coinflip` · `/8ball` · `/rps` · `/guesssong` · `/wouldyourather`",
+                    False,
+                ),
+                (
+                    "Admin",
+                    "`/admin` and `/forget` require the configured admin role.",
+                    False,
+                ),
             ],
             kind="info",
         )
@@ -2194,7 +2713,9 @@ def make_weather_command(bot: ConanBot) -> app_commands.Command:
         app_commands.Choice(name="Fahrenheit", value="imperial"),
     ]
 
-    @app_commands.command(name="weather", description="Show current weather and a short forecast.")
+    @app_commands.command(
+        name="weather", description="Show current weather and a short forecast."
+    )
     @app_commands.describe(
         location="City, state, country, ZIP code, or coordinates. Leave blank for your saved/default place.",
         units="Use automatic local units, Celsius, or Fahrenheit.",
@@ -2210,7 +2731,9 @@ def make_weather_command(bot: ConanBot) -> app_commands.Command:
         if not await ensure_command_enabled(interaction, "weather"):
             return
         config = await get_interaction_config(interaction)
-        weather_config = config.get("weather", {}) if isinstance(config.get("weather"), dict) else {}
+        weather_config = (
+            config.get("weather", {}) if isinstance(config.get("weather"), dict) else {}
+        )
         if not weather_config.get("enabled", True):
             await send_interaction_feedback(
                 interaction,
@@ -2237,7 +2760,9 @@ def make_weather_command(bot: ConanBot) -> app_commands.Command:
             return
 
         await interaction.response.defer(thinking=True)
-        selected_units = units.value if units else str(weather_config.get("units") or "auto")
+        selected_units = (
+            units.value if units else str(weather_config.get("units") or "auto")
+        )
         try:
             report = await bot.weather_client.get_weather(
                 location_query,
@@ -2258,7 +2783,11 @@ def make_weather_command(bot: ConanBot) -> app_commands.Command:
             await bot.store.add_log(
                 str(interaction.guild_id or bot.settings.guild_id or "global"),
                 "weather.failed",
-                {"authorId": str(interaction.user.id), "code": exc.code, "surface": "command"},
+                {
+                    "authorId": str(interaction.user.id),
+                    "code": exc.code,
+                    "surface": "command",
+                },
             )
             return
 
@@ -2273,9 +2802,17 @@ def make_weather_command(bot: ConanBot) -> app_commands.Command:
             remembered = True
 
         place = str((report.get("location") or {}).get("label") or "Weather")
-        fields = weather_fields(report, details=bool(weather_config.get("showDetails", True)))
+        fields = weather_fields(
+            report, details=bool(weather_config.get("showDetails", True))
+        )
         if remembered:
-            fields.append(("Saved location", "This is now your default for conversational weather questions.", False))
+            fields.append(
+                (
+                    "Saved location",
+                    "This is now your default for conversational weather questions.",
+                    False,
+                )
+            )
         fields.append(("Data", "Weather data © OpenWeather", False))
         await send_interaction_feedback(
             interaction,
@@ -2317,14 +2854,19 @@ def make_pun_command(bot: ConanBot) -> app_commands.Command:
             title="Pun department",
             outcome="delivered",
             facts=selected,
-            fields=[("The pun", selected, False), ("Damage level", "Emotionally unnecessary", True)],
+            fields=[
+                ("The pun", selected, False),
+                ("Damage level", "Emotionally unnecessary", True),
+            ],
         )
 
     return pun
 
 
 def make_motivation_command(bot: ConanBot) -> app_commands.Command:
-    @app_commands.command(name="motivation", description="Get a dramatic motivational quote.")
+    @app_commands.command(
+        name="motivation", description="Get a dramatic motivational quote."
+    )
     async def motivation(interaction: discord.Interaction) -> None:
         if not await ensure_command_enabled(interaction, "motivation"):
             return
@@ -2337,7 +2879,10 @@ def make_motivation_command(bot: ConanBot) -> app_commands.Command:
             title="Tiny main-character reset",
             outcome="encouragement delivered",
             facts=selected,
-            fields=[("Keep this part", selected, False), ("Next move", "One manageable thing. Then another.", False)],
+            fields=[
+                ("Keep this part", selected, False),
+                ("Next move", "One manageable thing. Then another.", False),
+            ],
             kind="success",
         )
 
@@ -2345,7 +2890,9 @@ def make_motivation_command(bot: ConanBot) -> app_commands.Command:
 
 
 def make_recommend_command(bot: ConanBot) -> app_commands.Command:
-    @app_commands.command(name="recommend", description="Get a Conan Gray song recommendation.")
+    @app_commands.command(
+        name="recommend", description="Get a Conan Gray song recommendation."
+    )
     async def recommend(interaction: discord.Interaction) -> None:
         if not await ensure_command_enabled(interaction, "recommend"):
             return
@@ -2373,12 +2920,21 @@ def make_coinflip_command(bot: ConanBot) -> app_commands.Command:
         config = await get_interaction_config(interaction)
         games = config.get("games", {})
         if not games.get("coinflipEnabled", True):
-            await send_interaction_feedback(interaction, config, title="Coinflip unavailable", description="Coinflip is disabled from the dashboard.", kind="warning", ephemeral=True)
+            await send_interaction_feedback(
+                interaction,
+                config,
+                title="Coinflip unavailable",
+                description="Coinflip is disabled from the dashboard.",
+                kind="warning",
+                ephemeral=True,
+            )
             return
         heads = str(games.get("coinflipHeadsLabel") or "Heads")
         tails = str(games.get("coinflipTailsLabel") or "Tails")
         result = random.choice([heads, tails])
-        message = str(games.get("coinflipMessage") or "The universe made a tiny decision.")
+        message = str(
+            games.get("coinflipMessage") or "The universe made a tiny decision."
+        )
         await send_action_result(
             interaction,
             config,
@@ -2386,7 +2942,10 @@ def make_coinflip_command(bot: ConanBot) -> app_commands.Command:
             title="The coin has spoken",
             outcome=result,
             facts=f"The deterministic coin result is {result}. Dashboard message: {message}",
-            fields=[("Result", f"**{result}**", True), ("Official statement", message, False)],
+            fields=[
+                ("Result", f"**{result}**", True),
+                ("Official statement", message, False),
+            ],
             kind="game",
         )
 
@@ -2394,7 +2953,9 @@ def make_coinflip_command(bot: ConanBot) -> app_commands.Command:
 
 
 def make_eightball_command(bot: ConanBot) -> app_commands.Command:
-    @app_commands.command(name="8ball", description="Ask the emotionally suspicious 8-ball.")
+    @app_commands.command(
+        name="8ball", description="Ask the emotionally suspicious 8-ball."
+    )
     @app_commands.describe(question="What do you want to ask?")
     async def eightball(interaction: discord.Interaction, question: str) -> None:
         if not await ensure_command_enabled(interaction, "eightball"):
@@ -2402,9 +2963,19 @@ def make_eightball_command(bot: ConanBot) -> app_commands.Command:
         config = await get_interaction_config(interaction)
         games = config.get("games", {})
         if not games.get("eightballEnabled", True):
-            await send_interaction_feedback(interaction, config, title="8-ball unavailable", description="The 8-ball is disabled from the dashboard.", kind="warning", ephemeral=True)
+            await send_interaction_feedback(
+                interaction,
+                config,
+                title="8-ball unavailable",
+                description="The 8-ball is disabled from the dashboard.",
+                kind="warning",
+                ephemeral=True,
+            )
             return
-        answers = games.get("eightballAnswers") or ["The vibes say yes.", "No, but dramatically."]
+        answers = games.get("eightballAnswers") or [
+            "The vibes say yes.",
+            "No, but dramatically.",
+        ]
         answer = str(random.choice(answers))
         await send_action_result(
             interaction,
@@ -2413,7 +2984,10 @@ def make_eightball_command(bot: ConanBot) -> app_commands.Command:
             title="The emotionally suspicious 8-ball",
             outcome=answer,
             facts=f"Question: {question}. Selected answer: {answer}.",
-            fields=[("You asked", question, False), ("The answer", f"**{answer}**", False)],
+            fields=[
+                ("You asked", question, False),
+                ("The answer", f"**{answer}**", False),
+            ],
             kind="game",
         )
 
@@ -2427,16 +3001,27 @@ def make_rps_command(bot: ConanBot) -> app_commands.Command:
         app_commands.Choice(name="Scissors", value="scissors"),
     ]
 
-    @app_commands.command(name="rps", description="Play rock paper scissors against the bot.")
+    @app_commands.command(
+        name="rps", description="Play rock paper scissors against the bot."
+    )
     @app_commands.describe(choice="Your move")
     @app_commands.choices(choice=choices)
-    async def rps(interaction: discord.Interaction, choice: app_commands.Choice[str]) -> None:
+    async def rps(
+        interaction: discord.Interaction, choice: app_commands.Choice[str]
+    ) -> None:
         if not await ensure_command_enabled(interaction, "rps"):
             return
         config = await get_interaction_config(interaction)
         games = config.get("games", {})
         if not games.get("rpsEnabled", True):
-            await send_interaction_feedback(interaction, config, title="Game unavailable", description="Rock Paper Scissors is disabled from the dashboard.", kind="warning", ephemeral=True)
+            await send_interaction_feedback(
+                interaction,
+                config,
+                title="Game unavailable",
+                description="Rock Paper Scissors is disabled from the dashboard.",
+                kind="warning",
+                ephemeral=True,
+            )
             return
         bot_choice = random.choice(["rock", "paper", "scissors"])
         beats = {"rock": "scissors", "paper": "rock", "scissors": "paper"}
@@ -2445,7 +3030,10 @@ def make_rps_command(bot: ConanBot) -> app_commands.Command:
             result = games.get("rpsDrawMessage") or "Draw. We are equally dramatic."
         elif beats[choice.value] == bot_choice:
             outcome = "you win"
-            result = games.get("rpsWinMessage") or "You win. I will stare out a window about it."
+            result = (
+                games.get("rpsWinMessage")
+                or "You win. I will stare out a window about it."
+            )
         else:
             outcome = "bot wins"
             result = games.get("rpsLoseMessage") or "I win. Very humble of me."
@@ -2456,7 +3044,11 @@ def make_rps_command(bot: ConanBot) -> app_commands.Command:
             title="Rock, paper, emotional consequences",
             outcome=outcome,
             facts=f"User chose {choice.value}. Bot chose {bot_choice}. Outcome: {outcome}. Configured response: {result}",
-            fields=[("Your move", choice.value.title(), True), ("Bot move", bot_choice.title(), True), ("Result", str(result), False)],
+            fields=[
+                ("Your move", choice.value.title(), True),
+                ("Bot move", bot_choice.title(), True),
+                ("Result", str(result), False),
+            ],
             kind="game",
         )
 
@@ -2464,14 +3056,24 @@ def make_rps_command(bot: ConanBot) -> app_commands.Command:
 
 
 def make_guesssong_command(bot: ConanBot) -> app_commands.Command:
-    @app_commands.command(name="guesssong", description="Start a reply-driven AI-judged song guessing round.")
+    @app_commands.command(
+        name="guesssong",
+        description="Start a reply-driven AI-judged song guessing round.",
+    )
     async def guesssong(interaction: discord.Interaction) -> None:
         if not await ensure_command_enabled(interaction, "guesssong"):
             return
         config = await get_interaction_config(interaction)
         games = config.get("games", {})
         if not games.get("guessSongEnabled", False):
-            await send_interaction_feedback(interaction, config, title="Game unavailable", description="Guess the Song is disabled from the dashboard.", kind="warning", ephemeral=True)
+            await send_interaction_feedback(
+                interaction,
+                config,
+                title="Game unavailable",
+                description="Guess the Song is disabled from the dashboard.",
+                kind="warning",
+                ephemeral=True,
+            )
             return
         rounds = configured_guess_song_rounds(games)
         if not rounds:
@@ -2486,7 +3088,9 @@ def make_guesssong_command(bot: ConanBot) -> app_commands.Command:
             )
             return
 
-        prompt = str(games.get("guessSongPrompt") or "Guess the Conan-coded song from this hint:")
+        prompt = str(
+            games.get("guessSongPrompt") or "Guess the Conan-coded song from this hint:"
+        )
         round_data = random.choice(rounds)
         answer = str(round_data["answer"])
         aliases = [str(item) for item in round_data.get("aliases") or []]
@@ -2502,7 +3106,11 @@ def make_guesssong_command(bot: ConanBot) -> app_commands.Command:
             fields=[
                 ("Prompt", prompt, False),
                 ("Clue", hint, False),
-                ("How to play", "Reply directly to this message with the song title.", False),
+                (
+                    "How to play",
+                    "Reply directly to this message with the song title.",
+                    False,
+                ),
                 ("Attempts", str(max_attempts), True),
                 ("Judge", "AI-assisted with deterministic fallback", True),
             ],
@@ -2520,13 +3128,21 @@ def make_guesssong_command(bot: ConanBot) -> app_commands.Command:
             await bot.store.add_log(
                 str(interaction.guild_id or bot.settings.guild_id or "global"),
                 "game.guesssong_state_failed",
-                {"reason": "missing_response_message_id", "channelId": str(getattr(interaction, "channel_id", "") or "")},
+                {
+                    "reason": "missing_response_message_id",
+                    "channelId": str(getattr(interaction, "channel_id", "") or ""),
+                },
             )
             return
 
-        timeout_minutes = max(1, min(int(games.get("guessSongRoundTimeoutMinutes") or 10), 1440))
+        timeout_minutes = max(
+            1, min(int(games.get("guessSongRoundTimeoutMinutes") or 10), 1440)
+        )
         guild_id = str(interaction.guild_id or bot.settings.guild_id or "global")
-        channel_id = str(getattr(interaction, "channel_id", "") or getattr(getattr(interaction, "channel", None), "id", ""))
+        channel_id = str(
+            getattr(interaction, "channel_id", "")
+            or getattr(getattr(interaction, "channel", None), "id", "")
+        )
         await bot.store.set_guessing_game(
             guild_id,
             channel_id,
@@ -2539,7 +3155,9 @@ def make_guesssong_command(bot: ConanBot) -> app_commands.Command:
                 "starterId": str(interaction.user.id),
                 "attempts": 0,
                 "maxAttempts": max_attempts,
-                "expiresAt": (datetime.now(timezone.utc) + timedelta(minutes=timeout_minutes)).isoformat(),
+                "expiresAt": (
+                    datetime.now(timezone.utc) + timedelta(minutes=timeout_minutes)
+                ).isoformat(),
             },
         )
         await bot.store.add_log(
@@ -2558,16 +3176,27 @@ def make_guesssong_command(bot: ConanBot) -> app_commands.Command:
 
 
 def make_wouldyourather_command(bot: ConanBot) -> app_commands.Command:
-    @app_commands.command(name="wouldyourather", description="Ask a dramatic would-you-rather question.")
+    @app_commands.command(
+        name="wouldyourather", description="Ask a dramatic would-you-rather question."
+    )
     async def wouldyourather(interaction: discord.Interaction) -> None:
         if not await ensure_command_enabled(interaction, "wouldyourather"):
             return
         config = await get_interaction_config(interaction)
         games = config.get("games", {})
         if not games.get("wouldYouRatherEnabled", False):
-            await send_interaction_feedback(interaction, config, title="Game unavailable", description="Would You Rather is disabled from the dashboard.", kind="warning", ephemeral=True)
+            await send_interaction_feedback(
+                interaction,
+                config,
+                title="Game unavailable",
+                description="Would You Rather is disabled from the dashboard.",
+                kind="warning",
+                ephemeral=True,
+            )
             return
-        questions = games.get("wouldYouRatherQuestions") or ["Would you rather be dramatic forever or emotionally stable for one day?"]
+        questions = games.get("wouldYouRatherQuestions") or [
+            "Would you rather be dramatic forever or emotionally stable for one day?"
+        ]
         question = str(random.choice(questions))
         await send_action_result(
             interaction,
@@ -2576,7 +3205,10 @@ def make_wouldyourather_command(bot: ConanBot) -> app_commands.Command:
             title="Choose your tiny crisis",
             outcome="question selected",
             facts=question,
-            fields=[("Would you rather…", question, False), ("Rules", "Pick one. Defend it like the bridge depends on it.", False)],
+            fields=[
+                ("Would you rather…", question, False),
+                ("Rules", "Pick one. Defend it like the bridge depends on it.", False),
+            ],
             kind="game",
         )
 
@@ -2584,7 +3216,9 @@ def make_wouldyourather_command(bot: ConanBot) -> app_commands.Command:
 
 
 def make_lyrics_command(bot: ConanBot) -> app_commands.Command:
-    @app_commands.command(name="lyrics", description="Get a Conan song vibe card without full lyrics.")
+    @app_commands.command(
+        name="lyrics", description="Get a Conan song vibe card without full lyrics."
+    )
     @app_commands.describe(song="Optional song name")
     async def lyrics(interaction: discord.Interaction, song: str | None = None) -> None:
         if not await ensure_command_enabled(interaction, "lyrics"):
@@ -2599,8 +3233,16 @@ def make_lyrics_command(bot: ConanBot) -> app_commands.Command:
             outcome="vibe analysis",
             facts=f"Selected song: {selected}. Full copyrighted lyrics are not provided.",
             fields=[
-                ("Vibe", "Emotionally cinematic, soft around the edges, and a little too relatable.", False),
-                ("What I can do", "Explain themes, discuss mood, or recommend something similar—without reproducing full lyrics.", False),
+                (
+                    "Vibe",
+                    "Emotionally cinematic, soft around the edges, and a little too relatable.",
+                    False,
+                ),
+                (
+                    "What I can do",
+                    "Explain themes, discuss mood, or recommend something similar—without reproducing full lyrics.",
+                    False,
+                ),
             ],
             kind="command",
         )
@@ -2628,14 +3270,23 @@ async def ensure_bot_admin(
         return None
     if member_has_admin_role(interaction.user, config, bot.settings):
         return config
-    denied = config.get("admin", {}).get("deniedMessage") or "You need the configured bot-admin role to use this command."
+    denied = (
+        config.get("admin", {}).get("deniedMessage")
+        or "You need the configured bot-admin role to use this command."
+    )
     await send_interaction_feedback(
         interaction,
         config,
         title="Control room locked",
         description=str(denied),
         kind="error",
-        fields=[("Required role", f"<@&{configured_admin_role_id(config, bot.settings)}>", False)],
+        fields=[
+            (
+                "Required role",
+                f"<@&{configured_admin_role_id(config, bot.settings)}>",
+                False,
+            )
+        ],
         ephemeral=True,
     )
     return None
@@ -2647,11 +3298,19 @@ def make_media_command(bot: ConanBot) -> app_commands.Command:
         app_commands.Choice(name="Video", value="video"),
     ]
 
-    @app_commands.command(name="media", description="Send a random image or video from the configured Google Drive folder.")
+    @app_commands.command(
+        name="media",
+        description="Send a random image or video from the configured Google Drive folder.",
+    )
     @app_commands.rename(media_type="type")
-    @app_commands.describe(media_type="Optional media type. Leave empty for either image or video.")
+    @app_commands.describe(
+        media_type="Optional media type. Leave empty for either image or video."
+    )
     @app_commands.choices(media_type=choices)
-    async def media(interaction: discord.Interaction, media_type: app_commands.Choice[str] | None = None) -> None:
+    async def media(
+        interaction: discord.Interaction,
+        media_type: app_commands.Choice[str] | None = None,
+    ) -> None:
         if not await ensure_command_enabled(interaction, "media"):
             return
         config = await get_interaction_config(interaction)
@@ -2737,24 +3396,45 @@ def make_media_command(bot: ConanBot) -> app_commands.Command:
             return
 
         if not selected:
-            label = "MP4 videos" if requested_type == "video" else "supported images" if requested_type == "image" else "supported media"
+            label = (
+                "MP4 videos"
+                if requested_type == "video"
+                else "supported images"
+                if requested_type == "image"
+                else "supported media"
+            )
             await send_interaction_feedback(
                 interaction,
                 config,
                 title="Nothing to pull from the archive",
                 description=f"The configured Drive folder has no {label} yet.",
                 kind="warning",
-                fields=[("Images", ".png · .webp · .jpg · .jpeg", False), ("Videos", ".mp4", False)],
+                fields=[
+                    ("Images", ".png · .webp · .jpg · .jpeg", False),
+                    ("Videos", ".mp4", False),
+                ],
                 ephemeral=True,
             )
             return
 
         file_name = Path(str(selected.get("name") or "media")).name
         file_id = str(selected.get("id") or "")
-        selected_type = str(selected.get("mediaType") or drive_media_type(selected) or requested_type or "media")
+        selected_type = str(
+            selected.get("mediaType")
+            or drive_media_type(selected)
+            or requested_type
+            or "media"
+        )
         file_size = int(selected.get("size") or 0)
-        configured_limit = max(1, int(media_config.get("randomCommandMaxFileSizeMb") or 25)) * 1024 * 1024
-        guild_limit = int(getattr(interaction.guild, "filesize_limit", configured_limit) or configured_limit)
+        configured_limit = (
+            max(1, int(media_config.get("randomCommandMaxFileSizeMb") or 25))
+            * 1024
+            * 1024
+        )
+        guild_limit = int(
+            getattr(interaction.guild, "filesize_limit", configured_limit)
+            or configured_limit
+        )
         upload_limit = min(configured_limit, guild_limit)
         fields = [
             ("Type", selected_type.title(), True),
@@ -2802,7 +3482,9 @@ def make_media_command(bot: ConanBot) -> app_commands.Command:
                 actor=interaction.user,
                 source_note=f"{source_note} • secure Drive stream",
                 image_url=stream_url if selected_type == "image" else None,
-                thumbnail_url=str(selected.get("thumbnailLink") or "") if selected_type == "video" else None,
+                thumbnail_url=str(selected.get("thumbnailLink") or "")
+                if selected_type == "video"
+                else None,
                 context=template_context,
             )
             await interaction.edit_original_response(
@@ -2828,10 +3510,14 @@ def make_media_command(bot: ConanBot) -> app_commands.Command:
             await send_as_secure_stream(file_size)
             return
 
-        suffix = Path(file_name).suffix or (".mp4" if selected_type == "video" else ".jpg")
+        suffix = Path(file_name).suffix or (
+            ".mp4" if selected_type == "video" else ".jpg"
+        )
         temp_path = ""
         try:
-            with tempfile.NamedTemporaryFile(prefix="conan-random-media-", suffix=suffix, delete=False) as handle:
+            with tempfile.NamedTemporaryFile(
+                prefix="conan-random-media-", suffix=suffix, delete=False
+            ) as handle:
                 temp_path = handle.name
             await bot.drive_archive.download_file(file_id, temp_path)
             actual_size = Path(temp_path).stat().st_size
@@ -2846,7 +3532,9 @@ def make_media_command(bot: ConanBot) -> app_commands.Command:
                 facts=f"Selected file: {file_name}. Type: {selected_type}. Size: {format_file_size(actual_size)}.",
                 actor_name=discord_profile_name(interaction.user),
             )
-            safe_attachment_name = re.sub(r"[^A-Za-z0-9._ -]+", "_", file_name).strip() or f"media{suffix}"
+            safe_attachment_name = (
+                re.sub(r"[^A-Za-z0-9._ -]+", "_", file_name).strip() or f"media{suffix}"
+            )
             template_context = {
                 "filename": file_name,
                 "mediaType": selected_type,
@@ -2855,7 +3543,10 @@ def make_media_command(bot: ConanBot) -> app_commands.Command:
                 "guild": getattr(interaction.guild, "name", "server"),
             }
             actor_name = discord_profile_name(interaction.user)
-            alt_template = str(media_config.get("videoAltTextTemplate") or "{filename} · requested by {actor}")
+            alt_template = str(
+                media_config.get("videoAltTextTemplate")
+                or "{filename} · requested by {actor}"
+            )
             media_alt = (
                 alt_template.replace("{filename}", file_name)
                 .replace("{actor}", actor_name)
@@ -2863,7 +3554,11 @@ def make_media_command(bot: ConanBot) -> app_commands.Command:
                 .replace("{size}", format_file_size(actual_size))
             )[:1024]
 
-            if selected_type == "video" and str(media_config.get("videoDisplayMode") or "embed_attachment") == "inline_card":
+            if (
+                selected_type == "video"
+                and str(media_config.get("videoDisplayMode") or "embed_attachment")
+                == "inline_card"
+            ):
                 try:
                     await send_interaction_inline_media_card(
                         interaction,
@@ -2881,8 +3576,12 @@ def make_media_command(bot: ConanBot) -> app_commands.Command:
                         context=template_context,
                     )
                 except Exception:
-                    log.exception("Discord inline video card failed; falling back to an embed plus native attachment")
-                    attachment = discord.File(temp_path, filename=safe_attachment_name, description=media_alt)
+                    log.exception(
+                        "Discord inline video card failed; falling back to an embed plus native attachment"
+                    )
+                    attachment = discord.File(
+                        temp_path, filename=safe_attachment_name, description=media_alt
+                    )
                     try:
                         embed = build_feedback_embed(
                             config,
@@ -2893,16 +3592,25 @@ def make_media_command(bot: ConanBot) -> app_commands.Command:
                             fields=fields,
                             actor=interaction.user,
                             source_note=f"{source_note} • inline player fallback",
-                            thumbnail_url=str(selected.get("thumbnailLink") or "") or None,
+                            thumbnail_url=str(selected.get("thumbnailLink") or "")
+                            or None,
                             context=template_context,
                         )
-                        await interaction.edit_original_response(content=None, embed=embed, attachments=[attachment])
+                        await interaction.edit_original_response(
+                            content=None, embed=embed, attachments=[attachment]
+                        )
                     finally:
                         attachment.close()
             else:
-                attachment = discord.File(temp_path, filename=safe_attachment_name, description=media_alt)
+                attachment = discord.File(
+                    temp_path, filename=safe_attachment_name, description=media_alt
+                )
                 try:
-                    image_url = f"attachment://{safe_attachment_name}" if selected_type == "image" else None
+                    image_url = (
+                        f"attachment://{safe_attachment_name}"
+                        if selected_type == "image"
+                        else None
+                    )
                     embed = build_feedback_embed(
                         config,
                         title="Random archive pull",
@@ -2913,10 +3621,14 @@ def make_media_command(bot: ConanBot) -> app_commands.Command:
                         actor=interaction.user,
                         source_note=source_note,
                         image_url=image_url,
-                        thumbnail_url=str(selected.get("thumbnailLink") or "") if selected_type == "video" else None,
+                        thumbnail_url=str(selected.get("thumbnailLink") or "")
+                        if selected_type == "video"
+                        else None,
                         context=template_context,
                     )
-                    await interaction.edit_original_response(content=None, embed=embed, attachments=[attachment])
+                    await interaction.edit_original_response(
+                        content=None, embed=embed, attachments=[attachment]
+                    )
                 finally:
                     attachment.close()
             await bot.store.add_log(
@@ -2936,7 +3648,9 @@ def make_media_command(bot: ConanBot) -> app_commands.Command:
                 interaction,
                 config,
                 title="Could not send that media file",
-                description=str(exc) if isinstance(exc, ValueError) else "The file could not be downloaded or attached to Discord.",
+                description=str(exc)
+                if isinstance(exc, ValueError)
+                else "The file could not be downloaded or attached to Discord.",
                 kind="error",
                 fields=fields,
                 ephemeral=True,
@@ -2958,11 +3672,18 @@ def format_file_size(value: int | float) -> str:
     while size >= 1024 and index < len(units) - 1:
         size /= 1024
         index += 1
-    return f"{size:.0f} {units[index]}" if index == 0 or size >= 10 else f"{size:.1f} {units[index]}"
+    return (
+        f"{size:.0f} {units[index]}"
+        if index == 0 or size >= 10
+        else f"{size:.1f} {units[index]}"
+    )
 
 
 def make_forget_command(bot: ConanBot) -> app_commands.Command:
-    @app_commands.command(name="forget", description="Clear the shared AI memory for this channel. Bot admins only.")
+    @app_commands.command(
+        name="forget",
+        description="Clear the shared AI memory for this channel. Bot admins only.",
+    )
     async def forget(interaction: discord.Interaction) -> None:
         config = await ensure_bot_admin(interaction, bot, command_key="forget")
         if not config:
@@ -2970,8 +3691,19 @@ def make_forget_command(bot: ConanBot) -> app_commands.Command:
         guild_id = str(interaction.guild_id or bot.settings.guild_id or "global")
         channel_id = str(interaction.channel_id)
         await bot.clear_ai_session(guild_id, channel_id)
-        await bot.store.add_log(guild_id, "memory.cleared", {"channelId": channel_id, "source": "slash", "actorId": str(interaction.user.id)})
-        message = config.get("admin", {}).get("memoryClearedMessage") or "Shared memory for this channel has been cleared."
+        await bot.store.add_log(
+            guild_id,
+            "memory.cleared",
+            {
+                "channelId": channel_id,
+                "source": "slash",
+                "actorId": str(interaction.user.id),
+            },
+        )
+        message = (
+            config.get("admin", {}).get("memoryClearedMessage")
+            or "Shared memory for this channel has been cleared."
+        )
         await send_action_result(
             interaction,
             config,
@@ -2979,7 +3711,10 @@ def make_forget_command(bot: ConanBot) -> app_commands.Command:
             title="Branch memory cleared",
             outcome="channel memory cleared",
             facts=f"AI branch memory was cleared for channel ID {channel_id}.",
-            fields=[("Scope", "Current channel", True), ("Status", str(message), False)],
+            fields=[
+                ("Scope", "Current channel", True),
+                ("Status", str(message), False),
+            ],
             kind="admin",
             ephemeral=True,
         )
@@ -2987,7 +3722,9 @@ def make_forget_command(bot: ConanBot) -> app_commands.Command:
     return forget
 
 
-async def _delayed_bot_control(bot: ConanBot, action: str, guild_id: str, actor_id: str) -> None:
+async def _delayed_bot_control(
+    bot: ConanBot, action: str, guild_id: str, actor_id: str
+) -> None:
     await asyncio.sleep(0.75)
     try:
         await bot.request_control(action, guild_id, actor_id)
@@ -2996,33 +3733,82 @@ async def _delayed_bot_control(bot: ConanBot, action: str, guild_id: str, actor_
 
 
 def make_admin_group(bot: ConanBot) -> app_commands.Group:
-    group = app_commands.Group(name="admin", description="Bot administration commands for the configured admin role.")
+    group = app_commands.Group(
+        name="admin",
+        description="Bot administration commands for the configured admin role.",
+    )
 
-    @group.command(name="clear-memory", description="Clear shared AI memory for this channel or the entire server.")
-    @app_commands.describe(scope="Clear only one channel or all remembered channels in this server.", channel="Optional channel to clear. Defaults to the current channel.")
-    @app_commands.choices(scope=[app_commands.Choice(name="Current/selected channel", value="channel"), app_commands.Choice(name="All channels", value="all")])
-    async def clear_memory(interaction: discord.Interaction, scope: app_commands.Choice[str], channel: discord.TextChannel | None = None) -> None:
+    @group.command(
+        name="clear-memory",
+        description="Clear shared AI memory for this channel or the entire server.",
+    )
+    @app_commands.describe(
+        scope="Clear only one channel or all remembered channels in this server.",
+        channel="Optional channel to clear. Defaults to the current channel.",
+    )
+    @app_commands.choices(
+        scope=[
+            app_commands.Choice(name="Current/selected channel", value="channel"),
+            app_commands.Choice(name="All channels", value="all"),
+        ]
+    )
+    async def clear_memory(
+        interaction: discord.Interaction,
+        scope: app_commands.Choice[str],
+        channel: discord.TextChannel | None = None,
+    ) -> None:
         config = await ensure_bot_admin(interaction, bot)
         if not config:
             return
         guild_id = str(interaction.guild_id or bot.settings.guild_id or "global")
         if scope.value == "all":
             cleared_channels = await bot.clear_all_ai_sessions(guild_id)
-            await bot.store.add_log(guild_id, "memory.cleared_all", {"channels": cleared_channels, "source": "slash", "actorId": str(interaction.user.id)})
+            await bot.store.add_log(
+                guild_id,
+                "memory.cleared_all",
+                {
+                    "channels": cleared_channels,
+                    "source": "slash",
+                    "actorId": str(interaction.user.id),
+                },
+            )
             await send_action_result(
-                interaction, config, feature="admin", title="Server memory reset", outcome="all branches cleared",
+                interaction,
+                config,
+                feature="admin",
+                title="Server memory reset",
+                outcome="all branches cleared",
                 facts=f"Cleared AI branch memory in {cleared_channels} channel(s).",
-                fields=[("Scope", "Entire server", True), ("Channels cleared", str(cleared_channels), True)], kind="admin", ephemeral=True,
+                fields=[
+                    ("Scope", "Entire server", True),
+                    ("Channels cleared", str(cleared_channels), True),
+                ],
+                kind="admin",
+                ephemeral=True,
             )
             return
         channel_id = str((channel.id if channel else interaction.channel_id) or "")
         await bot.clear_ai_session(guild_id, channel_id)
-        await bot.store.add_log(guild_id, "memory.cleared", {"channelId": channel_id, "source": "slash", "actorId": str(interaction.user.id)})
+        await bot.store.add_log(
+            guild_id,
+            "memory.cleared",
+            {
+                "channelId": channel_id,
+                "source": "slash",
+                "actorId": str(interaction.user.id),
+            },
+        )
         channel_label = channel.mention if channel else "this channel"
         await send_action_result(
-            interaction, config, feature="admin", title="Channel memory reset", outcome="branch memory cleared",
+            interaction,
+            config,
+            feature="admin",
+            title="Channel memory reset",
+            outcome="branch memory cleared",
             facts=f"Cleared every AI branch for {channel_label}.",
-            fields=[("Scope", channel_label, True), ("Status", "Cleared", True)], kind="admin", ephemeral=True,
+            fields=[("Scope", channel_label, True), ("Status", "Cleared", True)],
+            kind="admin",
+            ephemeral=True,
         )
 
     @group.command(name="status", description="Show bot, AI, and branch-memory status.")
@@ -3036,17 +3822,34 @@ def make_admin_group(bot: ConanBot) -> app_commands.Group:
         role_id = configured_admin_role_id(config, bot.settings)
         latency = round(bot.latency * 1000) if bot.latency is not None else 0
         await send_action_result(
-            interaction, config, feature="admin", title="Control-room status", outcome="status report",
+            interaction,
+            config,
+            feature="admin",
+            title="Control-room status",
+            outcome="status report",
             facts=f"Discord ready: {bot.is_ready()}; latency: {latency} ms; AI enabled: {ai_enabled}; memory channels: {stats['channels']}; stored messages: {stats['messages']}.",
             fields=[
-                ("Discord", f"{'Online' if bot.is_ready() else 'Connecting/offline'} · `{latency} ms`", True),
+                (
+                    "Discord",
+                    f"{'Online' if bot.is_ready() else 'Connecting/offline'} · `{latency} ms`",
+                    True,
+                ),
                 ("AI", "Enabled" if ai_enabled else "Paused", True),
-                ("Branch memory", f"{stats['channels']} channel(s) · {stats['messages']} message(s)", False),
+                (
+                    "Branch memory",
+                    f"{stats['channels']} channel(s) · {stats['messages']} message(s)",
+                    False,
+                ),
                 ("Admin role", f"<@&{role_id}>", False),
-            ], kind="admin", ephemeral=True,
+            ],
+            kind="admin",
+            ephemeral=True,
         )
 
-    @group.command(name="pause-ai", description="Pause AI replies without shutting down the Discord bot.")
+    @group.command(
+        name="pause-ai",
+        description="Pause AI replies without shutting down the Discord bot.",
+    )
     async def pause_ai(interaction: discord.Interaction) -> None:
         config = await ensure_bot_admin(interaction, bot)
         if not config:
@@ -3054,8 +3857,22 @@ def make_admin_group(bot: ConanBot) -> app_commands.Group:
         guild_id = str(interaction.guild_id or bot.settings.guild_id or "global")
         config.setdefault("ai", {})["enabled"] = False
         await bot.store.set_config(guild_id, config)
-        await bot.store.add_log(guild_id, "ai.paused", {"source": "slash", "actorId": str(interaction.user.id)})
-        await send_action_result(interaction, config, feature="admin", title="AI replies paused", outcome="paused", facts="AI message replies are paused. Slash commands and media functions remain online.", fields=[("AI chat", "Paused", True), ("Other commands", "Online", True)], kind="admin", ephemeral=True)
+        await bot.store.add_log(
+            guild_id,
+            "ai.paused",
+            {"source": "slash", "actorId": str(interaction.user.id)},
+        )
+        await send_action_result(
+            interaction,
+            config,
+            feature="admin",
+            title="AI replies paused",
+            outcome="paused",
+            facts="AI message replies are paused. Slash commands and media functions remain online.",
+            fields=[("AI chat", "Paused", True), ("Other commands", "Online", True)],
+            kind="admin",
+            ephemeral=True,
+        )
 
     @group.command(name="resume-ai", description="Resume AI replies.")
     async def resume_ai(interaction: discord.Interaction) -> None:
@@ -3065,20 +3882,43 @@ def make_admin_group(bot: ConanBot) -> app_commands.Group:
         guild_id = str(interaction.guild_id or bot.settings.guild_id or "global")
         config.setdefault("ai", {})["enabled"] = True
         await bot.store.set_config(guild_id, config)
-        await bot.store.add_log(guild_id, "ai.resumed", {"source": "slash", "actorId": str(interaction.user.id)})
-        await send_action_result(interaction, config, feature="admin", title="AI replies resumed", outcome="enabled", facts="AI message replies are enabled again.", fields=[("AI chat", "Enabled", True), ("Branch memory", "Preserved", True)], kind="admin", ephemeral=True)
+        await bot.store.add_log(
+            guild_id,
+            "ai.resumed",
+            {"source": "slash", "actorId": str(interaction.user.id)},
+        )
+        await send_action_result(
+            interaction,
+            config,
+            feature="admin",
+            title="AI replies resumed",
+            outcome="enabled",
+            facts="AI message replies are enabled again.",
+            fields=[("AI chat", "Enabled", True), ("Branch memory", "Preserved", True)],
+            kind="admin",
+            ephemeral=True,
+        )
 
-    @group.command(name="apply-presence", description="Apply the dashboard presence/status settings immediately.")
+    @group.command(
+        name="apply-presence",
+        description="Apply the dashboard presence/status settings immediately.",
+    )
     async def apply_presence(interaction: discord.Interaction) -> None:
         config = await ensure_bot_admin(interaction, bot)
         if not config:
             return
         guild_id = str(interaction.guild_id or bot.settings.guild_id or "global")
         await bot.apply_configured_presence(guild_id)
-        await bot.store.add_log(guild_id, "presence.applied", {"source": "slash", "actorId": str(interaction.user.id)})
+        await bot.store.add_log(
+            guild_id,
+            "presence.applied",
+            {"source": "slash", "actorId": str(interaction.user.id)},
+        )
         presence = config.get("presence", {})
         entries = bot._presence_entries(presence)
-        rotation_enabled = bool(presence.get("rotationEnabled", False)) and len(entries) > 1
+        rotation_enabled = (
+            bool(presence.get("rotationEnabled", False)) and len(entries) > 1
+        )
         interval = max(15, int(presence.get("intervalSeconds") or 60))
         first = entries[0]
         await send_action_result(
@@ -3095,38 +3935,89 @@ def make_admin_group(bot: ConanBot) -> app_commands.Group:
             fields=[
                 ("Mode", "Rotating" if rotation_enabled else "Static", True),
                 ("Entries", str(len(entries)), True),
-                ("Interval", f"{interval}s" if rotation_enabled else "Not rotating", True),
-                ("Current activity", f"{first.get('activityType', 'listening')} {first.get('activityText', '')}".strip(), False),
+                (
+                    "Interval",
+                    f"{interval}s" if rotation_enabled else "Not rotating",
+                    True,
+                ),
+                (
+                    "Current activity",
+                    f"{first.get('activityType', 'listening')} {first.get('activityText', '')}".strip(),
+                    False,
+                ),
             ],
             kind="admin",
             ephemeral=True,
         )
 
-    @group.command(name="restart", description="Restart the Discord bot connection. The dashboard stays online.")
+    @group.command(
+        name="restart",
+        description="Restart the Discord bot connection. The dashboard stays online.",
+    )
     async def restart(interaction: discord.Interaction) -> None:
         config = await ensure_bot_admin(interaction, bot)
         if not config:
             return
         guild_id = str(interaction.guild_id or bot.settings.guild_id or "global")
-        message = config.get("admin", {}).get("restartMessage") or "Restarting the Discord bot connection…"
-        await send_interaction_feedback(interaction, config, title="Restart queued", description=str(message), kind="admin", fields=[("Dashboard/API", "Stays online", True), ("Discord connection", "Restarting", True)], ephemeral=True)
-        asyncio.create_task(_delayed_bot_control(bot, "restart", guild_id, str(interaction.user.id)))
+        message = (
+            config.get("admin", {}).get("restartMessage")
+            or "Restarting the Discord bot connection…"
+        )
+        await send_interaction_feedback(
+            interaction,
+            config,
+            title="Restart queued",
+            description=str(message),
+            kind="admin",
+            fields=[
+                ("Dashboard/API", "Stays online", True),
+                ("Discord connection", "Restarting", True),
+            ],
+            ephemeral=True,
+        )
+        asyncio.create_task(
+            _delayed_bot_control(bot, "restart", guild_id, str(interaction.user.id))
+        )
 
-    @group.command(name="shutdown", description="Stop the Discord bot connection. Restart it from the dashboard.")
+    @group.command(
+        name="shutdown",
+        description="Stop the Discord bot connection. Restart it from the dashboard.",
+    )
     async def shutdown(interaction: discord.Interaction) -> None:
         config = await ensure_bot_admin(interaction, bot)
         if not config:
             return
         guild_id = str(interaction.guild_id or bot.settings.guild_id or "global")
-        message = config.get("admin", {}).get("shutdownMessage") or "Shutting down the Discord bot connection."
-        await send_interaction_feedback(interaction, config, title="Shutdown queued", description=str(message), kind="warning", fields=[("Dashboard/API", "Stays online", True), ("Discord connection", "Stopping", True)], ephemeral=True)
-        asyncio.create_task(_delayed_bot_control(bot, "shutdown", guild_id, str(interaction.user.id)))
+        message = (
+            config.get("admin", {}).get("shutdownMessage")
+            or "Shutting down the Discord bot connection."
+        )
+        await send_interaction_feedback(
+            interaction,
+            config,
+            title="Shutdown queued",
+            description=str(message),
+            kind="warning",
+            fields=[
+                ("Dashboard/API", "Stays online", True),
+                ("Discord connection", "Stopping", True),
+            ],
+            ephemeral=True,
+        )
+        asyncio.create_task(
+            _delayed_bot_control(bot, "shutdown", guild_id, str(interaction.user.id))
+        )
 
     return group
 
 
 class TicTacToeView(discord.ui.View):
-    def __init__(self, owner_id: int, opponent_id: int | None = None, config: dict[str, Any] | None = None) -> None:
+    def __init__(
+        self,
+        owner_id: int,
+        opponent_id: int | None = None,
+        config: dict[str, Any] | None = None,
+    ) -> None:
         super().__init__(timeout=300)
         self.owner_id = owner_id
         self.opponent_id = opponent_id
@@ -3141,7 +4032,16 @@ class TicTacToeView(discord.ui.View):
         return self.owner_id if self.turn == "X" else self.opponent_id
 
     def winner(self) -> str | None:
-        wins = [(0, 1, 2), (3, 4, 5), (6, 7, 8), (0, 3, 6), (1, 4, 7), (2, 5, 8), (0, 4, 8), (2, 4, 6)]
+        wins = [
+            (0, 1, 2),
+            (3, 4, 5),
+            (6, 7, 8),
+            (0, 3, 6),
+            (1, 4, 7),
+            (2, 5, 8),
+            (0, 4, 8),
+            (2, 4, 6),
+        ]
         for a, b, c in wins:
             if self.board[a] and self.board[a] == self.board[b] == self.board[c]:
                 return self.board[a]
@@ -3176,10 +4076,16 @@ class TicTacToeView(discord.ui.View):
             self.disable_board()
             if winner == "draw":
                 outcome = "draw"
-                result = str(self.games_config.get("ticTacToeDrawMessage") or "Tic-tac-toe ended in a draw. Very emotionally neutral.")
+                result = str(
+                    self.games_config.get("ticTacToeDrawMessage")
+                    or "Tic-tac-toe ended in a draw. Very emotionally neutral."
+                )
             else:
                 outcome = f"{winner} wins"
-                template = str(self.games_config.get("ticTacToeWinMessage") or "{winner} won. The drama has concluded.")
+                template = str(
+                    self.games_config.get("ticTacToeWinMessage")
+                    or "{winner} won. The drama has concluded."
+                )
                 result = template.replace("{winner}", winner)
             narration, source_note = await interpret_action(
                 self.config,
@@ -3194,11 +4100,16 @@ class TicTacToeView(discord.ui.View):
                 description=narration,
                 kind="game",
                 template_key="game_tictactoe",
-                fields=[("Final board", f"```\n{self.board_text()}\n```", False), ("Result", result, False)],
+                fields=[
+                    ("Final board", f"```\n{self.board_text()}\n```", False),
+                    ("Result", result, False),
+                ],
                 actor=interaction.user,
                 source_note=source_note,
             )
-            await interaction.edit_original_response(content=None, embed=embed, view=self)
+            await interaction.edit_original_response(
+                content=None, embed=embed, view=self
+            )
             return
 
         embed = build_feedback_embed(
@@ -3207,7 +4118,10 @@ class TicTacToeView(discord.ui.View):
             description="The board is still open. Choose carefully; every square is now somehow a personality test.",
             kind="game",
             template_key="game_tictactoe",
-            fields=[("Board", f"```\n{self.board_text()}\n```", False), ("Current turn", self.turn, True)],
+            fields=[
+                ("Board", f"```\n{self.board_text()}\n```", False),
+                ("Current turn", self.turn, True),
+            ],
             actor=interaction.user,
         )
         await interaction.edit_original_response(content=None, embed=embed, view=self)
@@ -3223,16 +4137,34 @@ class TicTacToeButton(discord.ui.Button):
         assert isinstance(view, TicTacToeView)
         current = view.current_player_id()
         if current and interaction.user.id != current:
-            await send_interaction_feedback(interaction, view.config, title="Not your turn", description="That square belongs to the other player's current emotional journey.", kind="warning", ephemeral=True)
+            await send_interaction_feedback(
+                interaction,
+                view.config,
+                title="Not your turn",
+                description="That square belongs to the other player's current emotional journey.",
+                kind="warning",
+                ephemeral=True,
+            )
             return
         if view.board[self.index]:
-            await send_interaction_feedback(interaction, view.config, title="Square unavailable", description="That square is already occupied and carrying enough narrative weight.", kind="warning", ephemeral=True)
+            await send_interaction_feedback(
+                interaction,
+                view.config,
+                title="Square unavailable",
+                description="That square is already occupied and carrying enough narrative weight.",
+                kind="warning",
+                ephemeral=True,
+            )
             return
 
         view.board[self.index] = view.turn
         self.label = view.turn
         self.disabled = True
-        self.style = discord.ButtonStyle.success if view.turn == "X" else discord.ButtonStyle.danger
+        self.style = (
+            discord.ButtonStyle.success
+            if view.turn == "X"
+            else discord.ButtonStyle.danger
+        )
         view.turn = "O" if view.turn == "X" else "X"
         await interaction.response.defer()
         await view.make_bot_move_if_needed()
@@ -3241,27 +4173,66 @@ class TicTacToeButton(discord.ui.Button):
 
 def make_tictactoe_command(bot: ConanBot) -> app_commands.Command:
     @app_commands.command(name="tictactoe", description="Start a tic-tac-toe game.")
-    @app_commands.describe(opponent="Optional opponent. Leave empty to play against the bot.")
-    async def tictactoe(interaction: discord.Interaction, opponent: discord.Member | None = None) -> None:
+    @app_commands.describe(
+        opponent="Optional opponent. Leave empty to play against the bot."
+    )
+    async def tictactoe(
+        interaction: discord.Interaction, opponent: discord.Member | None = None
+    ) -> None:
         if not await ensure_command_enabled(interaction, "tictactoe"):
             return
         config = await get_interaction_config(interaction)
-        allowed_category_id = str(config.get("games", {}).get("allowedCategoryId") or bot.settings.allowed_category_id)
+        allowed_category_id = str(
+            config.get("games", {}).get("allowedCategoryId")
+            or bot.settings.allowed_category_id
+        )
         channel = interaction.channel
-        if allowed_category_id and getattr(channel, "category_id", None) and str(channel.category_id) != allowed_category_id:
-            await send_interaction_feedback(interaction, config, title="Games unavailable here", description="Games are restricted to the configured Discord category.", kind="warning", fields=[("Allowed category ID", allowed_category_id, False)], ephemeral=True)
+        if (
+            allowed_category_id
+            and getattr(channel, "category_id", None)
+            and str(channel.category_id) != allowed_category_id
+        ):
+            await send_interaction_feedback(
+                interaction,
+                config,
+                title="Games unavailable here",
+                description="Games are restricted to the configured Discord category.",
+                kind="warning",
+                fields=[("Allowed category ID", allowed_category_id, False)],
+                ephemeral=True,
+            )
             return
         games = config.get("games", {})
         if not games.get("ticTacToeEnabled", True):
-            await send_interaction_feedback(interaction, config, title="Game unavailable", description="Tic-tac-toe is disabled from the dashboard.", kind="warning", ephemeral=True)
+            await send_interaction_feedback(
+                interaction,
+                config,
+                title="Game unavailable",
+                description="Tic-tac-toe is disabled from the dashboard.",
+                kind="warning",
+                ephemeral=True,
+            )
             return
         if not games.get("ticTacToeAllowBotOpponent", True) and opponent is None:
-            await send_interaction_feedback(interaction, config, title="Opponent required", description="The bot opponent is disabled. Choose another server member.", kind="warning", ephemeral=True)
+            await send_interaction_feedback(
+                interaction,
+                config,
+                title="Opponent required",
+                description="The bot opponent is disabled. Choose another server member.",
+                kind="warning",
+                ephemeral=True,
+            )
             return
         if opponent and opponent.bot:
             opponent = None
-        view = TicTacToeView(interaction.user.id, opponent.id if opponent else None, config)
-        opponent_text = opponent.mention if opponent else "Conan Gray Bot's extremely questionable strategy"
+        view = TicTacToeView(
+            interaction.user.id, opponent.id if opponent else None, config
+        )
+        opponent_text = (
+            opponent.mention
+            if opponent
+            else "Conan Gray Bot's extremely questionable strategy"
+        )
         await send_action_result(
             interaction,
             config,
@@ -3269,7 +4240,15 @@ def make_tictactoe_command(bot: ConanBot) -> app_commands.Command:
             title="Tic-tac-toe opening scene",
             outcome="game started",
             facts=f"Player X is {interaction.user.mention}. Player O is {opponent_text}. X moves first.",
-            fields=[("Players", f"{interaction.user.mention} **vs.** {opponent_text}", False), ("Opening turn", "X", True), ("Board", "```\n·  ·  ·\n·  ·  ·\n·  ·  ·\n```", False)],
+            fields=[
+                (
+                    "Players",
+                    f"{interaction.user.mention} **vs.** {opponent_text}",
+                    False,
+                ),
+                ("Opening turn", "X", True),
+                ("Board", "```\n·  ·  ·\n·  ·  ·\n·  ·  ·\n```", False),
+            ],
             kind="game",
             view=view,
         )
@@ -3277,7 +4256,9 @@ def make_tictactoe_command(bot: ConanBot) -> app_commands.Command:
     return tictactoe
 
 
-def application_command_factories() -> tuple[tuple[str, Callable[[ConanBot], Any]], ...]:
+def application_command_factories() -> tuple[
+    tuple[str, Callable[[ConanBot], Any]], ...
+]:
     return (
         ("ping", make_ping_command),
         ("help", make_help_command),

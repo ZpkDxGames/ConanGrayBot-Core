@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import asyncio
-import math
 import re
 import time
 from dataclasses import dataclass
@@ -12,7 +11,9 @@ import aiohttp
 
 
 class WeatherError(RuntimeError):
-    def __init__(self, message: str, *, code: str = "weather_error", status: int = 502) -> None:
+    def __init__(
+        self, message: str, *, code: str = "weather_error", status: int = 502
+    ) -> None:
         super().__init__(message)
         self.code = code
         self.status = status
@@ -84,7 +85,9 @@ def extract_weather_location(text: str) -> str:
         if not match:
             continue
         candidate = _TRAILING_TIME_RE.sub("", match.group(1)).strip(" ,.!?;:\t")
-        candidate = re.sub(r"^(?:the\s+)?(?:city|state|country)\s+of\s+", "", candidate, flags=re.I)
+        candidate = re.sub(
+            r"^(?:the\s+)?(?:city|state|country)\s+of\s+", "", candidate, flags=re.I
+        )
         if 1 < len(candidate) <= 120 and not _WEATHER_TERMS_RE.fullmatch(candidate):
             return candidate
     return ""
@@ -116,7 +119,9 @@ def _format_clock(timestamp: Any, offset_seconds: int) -> str:
         utc_value = datetime.fromtimestamp(int(timestamp), tz=timezone.utc)
     except (TypeError, ValueError, OSError):
         return "—"
-    local_value = datetime.fromtimestamp(utc_value.timestamp() + int(offset_seconds or 0), tz=timezone.utc)
+    local_value = datetime.fromtimestamp(
+        utc_value.timestamp() + int(offset_seconds or 0), tz=timezone.utc
+    )
     return local_value.strftime("%H:%M")
 
 
@@ -146,7 +151,9 @@ class OpenWeatherClient:
     async def _get_session(self) -> aiohttp.ClientSession:
         if self._session is None or self._session.closed:
             timeout = aiohttp.ClientTimeout(total=self.timeout_seconds)
-            self._session = aiohttp.ClientSession(timeout=timeout, raise_for_status=False)
+            self._session = aiohttp.ClientSession(
+                timeout=timeout, raise_for_status=False
+            )
         return self._session
 
     async def _request_json(self, url: str, params: dict[str, Any]) -> Any:
@@ -162,35 +169,64 @@ class OpenWeatherClient:
             async with session.get(url, params=query) as response:
                 payload = await response.json(content_type=None)
         except asyncio.TimeoutError as exc:
-            raise WeatherError("The weather service took too long to answer.", code="timeout", status=504) from exc
+            raise WeatherError(
+                "The weather service took too long to answer.",
+                code="timeout",
+                status=504,
+            ) from exc
         except (aiohttp.ClientError, ValueError) as exc:
-            raise WeatherError("The weather service could not be reached.", code="network_error", status=502) from exc
+            raise WeatherError(
+                "The weather service could not be reached.",
+                code="network_error",
+                status=502,
+            ) from exc
 
         if response.status >= 400:
             message = payload.get("message") if isinstance(payload, dict) else ""
             if response.status == 401:
-                raise WeatherError("The OpenWeather API key was rejected.", code="invalid_key", status=503)
+                raise WeatherError(
+                    "The OpenWeather API key was rejected.",
+                    code="invalid_key",
+                    status=503,
+                )
             if response.status == 429:
-                raise WeatherError("The weather request limit was reached. Try again shortly.", code="rate_limited", status=429)
-            raise WeatherError(str(message or "The weather service returned an error."), status=response.status)
+                raise WeatherError(
+                    "The weather request limit was reached. Try again shortly.",
+                    code="rate_limited",
+                    status=429,
+                )
+            raise WeatherError(
+                str(message or "The weather service returned an error."),
+                status=response.status,
+            )
         return payload
 
     async def geocode(self, query: str) -> WeatherLocation:
         cleaned = " ".join(str(query or "").split()).strip()
         if not cleaned:
-            raise WeatherError("A city, state, or country is needed first.", code="location_required", status=400)
+            raise WeatherError(
+                "A city, state, or country is needed first.",
+                code="location_required",
+                status=400,
+            )
 
         cache_key = cleaned.casefold()
         cached = self._geocode_cache.get(cache_key)
         if cached and time.monotonic() - cached[0] < 86400:
             return cached[1]
 
-        coordinate_match = re.fullmatch(r"\s*(-?\d+(?:\.\d+)?)\s*,\s*(-?\d+(?:\.\d+)?)\s*", cleaned)
+        coordinate_match = re.fullmatch(
+            r"\s*(-?\d+(?:\.\d+)?)\s*,\s*(-?\d+(?:\.\d+)?)\s*", cleaned
+        )
         if coordinate_match:
             lat = float(coordinate_match.group(1))
             lon = float(coordinate_match.group(2))
             if not (-90 <= lat <= 90 and -180 <= lon <= 180):
-                raise WeatherError("Those coordinates are outside the valid range.", code="invalid_coordinates", status=400)
+                raise WeatherError(
+                    "Those coordinates are outside the valid range.",
+                    code="invalid_coordinates",
+                    status=400,
+                )
             reverse = await self._request_json(
                 "https://api.openweathermap.org/geo/1.0/reverse",
                 {"lat": lat, "lon": lon, "limit": 1},
@@ -206,7 +242,9 @@ class OpenWeatherClient:
             self._geocode_cache[cache_key] = (time.monotonic(), location)
             return location
 
-        zip_match = re.fullmatch(r"([A-Za-z0-9][A-Za-z0-9 -]{1,11})(?:\s*,\s*([A-Za-z]{2}))?", cleaned)
+        zip_match = re.fullmatch(
+            r"([A-Za-z0-9][A-Za-z0-9 -]{1,11})(?:\s*,\s*([A-Za-z]{2}))?", cleaned
+        )
         if zip_match and any(character.isdigit() for character in zip_match.group(1)):
             zip_value = zip_match.group(1).replace(" ", "")
             country = str(zip_match.group(2) or "").upper()
@@ -215,7 +253,11 @@ class OpenWeatherClient:
                 "https://api.openweathermap.org/geo/1.0/zip",
                 {"zip": zip_query},
             )
-            if isinstance(payload, dict) and payload.get("lat") is not None and payload.get("lon") is not None:
+            if (
+                isinstance(payload, dict)
+                and payload.get("lat") is not None
+                and payload.get("lon") is not None
+            ):
                 location = WeatherLocation(
                     name=str(payload.get("name") or cleaned),
                     state="",
@@ -246,7 +288,9 @@ class OpenWeatherClient:
         )
         self._geocode_cache[cache_key] = (time.monotonic(), location)
         if len(self._geocode_cache) > 256:
-            oldest = sorted(self._geocode_cache.items(), key=lambda item: item[1][0])[:64]
+            oldest = sorted(self._geocode_cache.items(), key=lambda item: item[1][0])[
+                :64
+            ]
             for key, _ in oldest:
                 self._geocode_cache.pop(key, None)
         return location
@@ -280,8 +324,12 @@ class OpenWeatherClient:
                 "lang": language,
             }
             current_payload, forecast_payload = await asyncio.gather(
-                self._request_json("https://api.openweathermap.org/data/2.5/weather", common),
-                self._request_json("https://api.openweathermap.org/data/2.5/forecast", common),
+                self._request_json(
+                    "https://api.openweathermap.org/data/2.5/weather", common
+                ),
+                self._request_json(
+                    "https://api.openweathermap.org/data/2.5/forecast", common
+                ),
             )
             report = self._normalize_report(
                 location,
@@ -309,9 +357,17 @@ class OpenWeatherClient:
     ) -> dict[str, Any]:
         main = current.get("main") if isinstance(current.get("main"), dict) else {}
         wind = current.get("wind") if isinstance(current.get("wind"), dict) else {}
-        weather_rows = current.get("weather") if isinstance(current.get("weather"), list) else []
-        weather_now = weather_rows[0] if weather_rows and isinstance(weather_rows[0], dict) else {}
-        timezone_offset = int(current.get("timezone") or forecast.get("city", {}).get("timezone") or 0)
+        weather_rows = (
+            current.get("weather") if isinstance(current.get("weather"), list) else []
+        )
+        weather_now = (
+            weather_rows[0]
+            if weather_rows and isinstance(weather_rows[0], dict)
+            else {}
+        )
+        timezone_offset = int(
+            current.get("timezone") or forecast.get("city", {}).get("timezone") or 0
+        )
         temperature_label, wind_label = unit_labels(units)
         current_dt = int(current.get("dt") or datetime.now(timezone.utc).timestamp())
         cutoff = current_dt + forecast_hours * 3600
@@ -324,20 +380,38 @@ class OpenWeatherClient:
             if timestamp <= 0 or timestamp > cutoff:
                 continue
             row_main = row.get("main") if isinstance(row.get("main"), dict) else {}
-            row_weather = row.get("weather") if isinstance(row.get("weather"), list) else []
-            row_condition = row_weather[0] if row_weather and isinstance(row_weather[0], dict) else {}
-            forecast_rows.append({
-                "timestamp": timestamp,
-                "time": _format_clock(timestamp, timezone_offset),
-                "temperature": float(row_main.get("temp") or 0),
-                "description": _condition_phrase(str(row_condition.get("description") or "")),
-                "precipitationProbability": max(0.0, min(float(row.get("pop") or 0), 1.0)),
-            })
+            row_weather = (
+                row.get("weather") if isinstance(row.get("weather"), list) else []
+            )
+            row_condition = (
+                row_weather[0]
+                if row_weather and isinstance(row_weather[0], dict)
+                else {}
+            )
+            forecast_rows.append(
+                {
+                    "timestamp": timestamp,
+                    "time": _format_clock(timestamp, timezone_offset),
+                    "temperature": float(row_main.get("temp") or 0),
+                    "description": _condition_phrase(
+                        str(row_condition.get("description") or "")
+                    ),
+                    "precipitationProbability": max(
+                        0.0, min(float(row.get("pop") or 0), 1.0)
+                    ),
+                }
+            )
 
         temperatures = [float(row["temperature"]) for row in forecast_rows]
-        precipitation = [float(row["precipitationProbability"]) for row in forecast_rows]
+        precipitation = [
+            float(row["precipitationProbability"]) for row in forecast_rows
+        ]
         forecast_descriptions = [str(row["description"]) for row in forecast_rows]
-        dominant_description = max(set(forecast_descriptions), key=forecast_descriptions.count) if forecast_descriptions else ""
+        dominant_description = (
+            max(set(forecast_descriptions), key=forecast_descriptions.count)
+            if forecast_descriptions
+            else ""
+        )
 
         report = {
             "location": location.as_dict(),
@@ -354,19 +428,31 @@ class OpenWeatherClient:
                 "visibilityKm": round(float(current.get("visibility") or 0) / 1000, 1),
                 "windSpeed": float(wind.get("speed") or 0),
                 "windGust": float(wind.get("gust") or 0),
-                "description": _condition_phrase(str(weather_now.get("description") or weather_now.get("main") or "")),
+                "description": _condition_phrase(
+                    str(weather_now.get("description") or weather_now.get("main") or "")
+                ),
                 "icon": str(weather_now.get("icon") or ""),
                 "clouds": int((current.get("clouds") or {}).get("all") or 0),
-                "sunrise": _format_clock((current.get("sys") or {}).get("sunrise"), timezone_offset),
-                "sunset": _format_clock((current.get("sys") or {}).get("sunset"), timezone_offset),
+                "sunrise": _format_clock(
+                    (current.get("sys") or {}).get("sunrise"), timezone_offset
+                ),
+                "sunset": _format_clock(
+                    (current.get("sys") or {}).get("sunset"), timezone_offset
+                ),
                 "observedAt": _format_clock(current_dt, timezone_offset),
             },
             "forecast": {
                 "hours": forecast_hours,
                 "rows": forecast_rows,
-                "minimum": min(temperatures) if temperatures else float(main.get("temp") or 0),
-                "maximum": max(temperatures) if temperatures else float(main.get("temp") or 0),
-                "precipitationProbability": max(precipitation) if precipitation else 0.0,
+                "minimum": min(temperatures)
+                if temperatures
+                else float(main.get("temp") or 0),
+                "maximum": max(temperatures)
+                if temperatures
+                else float(main.get("temp") or 0),
+                "precipitationProbability": max(precipitation)
+                if precipitation
+                else 0.0,
                 "description": dominant_description,
             },
             "timezoneOffsetSeconds": timezone_offset,
@@ -374,28 +460,48 @@ class OpenWeatherClient:
         return report
 
 
-def weather_fields(report: dict[str, Any], *, details: bool = True) -> list[tuple[str, str, bool]]:
+def weather_fields(
+    report: dict[str, Any], *, details: bool = True
+) -> list[tuple[str, str, bool]]:
     current = report.get("current") or {}
     forecast = report.get("forecast") or {}
     temp_unit = str(report.get("temperatureLabel") or "°C")
     wind_unit = str(report.get("windLabel") or "m/s")
     fields: list[tuple[str, str, bool]] = [
-        ("Now", f"{_round_temperature(current.get('temperature'))}{temp_unit} · {current.get('description') or 'weather'}", True),
-        ("Feels like", f"{_round_temperature(current.get('feelsLike'))}{temp_unit}", True),
-        ("Rain chance", f"{round(float(forecast.get('precipitationProbability') or 0) * 100)}%", True),
+        (
+            "Now",
+            f"{_round_temperature(current.get('temperature'))}{temp_unit} · {current.get('description') or 'weather'}",
+            True,
+        ),
+        (
+            "Feels like",
+            f"{_round_temperature(current.get('feelsLike'))}{temp_unit}",
+            True,
+        ),
+        (
+            "Rain chance",
+            f"{round(float(forecast.get('precipitationProbability') or 0) * 100)}%",
+            True,
+        ),
     ]
     if details:
-        fields.extend([
-            ("Humidity", f"{int(current.get('humidity') or 0)}%", True),
-            ("Wind", f"{float(current.get('windSpeed') or 0):g} {wind_unit}", True),
-            ("Sun", f"{current.get('sunrise') or '—'} → {current.get('sunset') or '—'}", True),
-            (
-                f"Next {int(forecast.get('hours') or 12)} hours",
-                f"{_round_temperature(forecast.get('minimum'))}{temp_unit} to {_round_temperature(forecast.get('maximum'))}{temp_unit} · "
-                f"{forecast.get('description') or current.get('description') or 'mixed conditions'}",
-                False,
-            ),
-        ])
+        fields.extend(
+            [
+                ("Humidity", f"{int(current.get('humidity') or 0)}%", True),
+                ("Wind", f"{float(current.get('windSpeed') or 0):g} {wind_unit}", True),
+                (
+                    "Sun",
+                    f"{current.get('sunrise') or '—'} → {current.get('sunset') or '—'}",
+                    True,
+                ),
+                (
+                    f"Next {int(forecast.get('hours') or 12)} hours",
+                    f"{_round_temperature(forecast.get('minimum'))}{temp_unit} to {_round_temperature(forecast.get('maximum'))}{temp_unit} · "
+                    f"{forecast.get('description') or current.get('description') or 'mixed conditions'}",
+                    False,
+                ),
+            ]
+        )
     return fields
 
 

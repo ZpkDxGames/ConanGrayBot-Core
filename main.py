@@ -7,5 +7,5 @@ if __name__ == "__main__":
     from backend.config import get_settings
 
     settings = get_settings()
-    uvicorn.run("main:app", host=settings.host, port=settings.port, reload=False)
+    uvicorn.run("main:app", host=settings.host, port=settings.port, reload=False, log_config=None, access_log=False)
 

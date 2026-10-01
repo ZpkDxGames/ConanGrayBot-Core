@@ -5,12 +5,13 @@ import base64
 import json
 import logging
 import os
-import re
 import random
+import re
 from pathlib import Path
 from typing import Any
 
 from .config import get_settings
+from .io import run_blocking
 
 log = logging.getLogger("conan.drive")
 
@@ -110,7 +111,11 @@ def _http_error_details(exc: Exception) -> tuple[int, str, str, str]:
         if not reason:
             details = error.get("details") or []
             for detail in details:
-                reason = str(detail.get("reason") or detail.get("metadata", {}).get("reason") or "")
+                reason = str(
+                    detail.get("reason")
+                    or detail.get("metadata", {}).get("reason")
+                    or ""
+                )
                 if reason:
                     break
     except Exception:
@@ -148,7 +153,11 @@ def normalize_drive_error(
             action_url=project_url,
             raw_message=message,
         )
-    if normalized == "accessnotconfigured" or "has not been used" in lower_message or "it is disabled" in lower_message:
+    if (
+        normalized == "accessnotconfigured"
+        or "has not been used" in lower_message
+        or "it is disabled" in lower_message
+    ):
         return DriveConfigurationError(
             "Google Drive API is disabled for the active credential project. Enable the Drive API in that "
             "project, wait a few minutes, then test again.",
@@ -191,7 +200,11 @@ def normalize_drive_error(
             project_id=effective_project,
             raw_message=message,
         )
-    if normalized in {"ratelimitexceeded", "userratelimitexceeded", "dailylimitexceeded"} or status == 429:
+    if (
+        normalized
+        in {"ratelimitexceeded", "userratelimitexceeded", "dailylimitexceeded"}
+        or status == 429
+    ):
         return DriveConfigurationError(
             "Google Drive temporarily rate-limited the service-account project. Wait briefly and retry.",
             code="drive_rate_limited",
@@ -231,7 +244,6 @@ def _decode_service_account(raw: str) -> dict[str, Any] | None:
         return None
 
 
-
 def load_drive_service_account() -> dict[str, Any] | None:
     """Load a dedicated Drive service account.
 
@@ -250,10 +262,12 @@ def load_drive_service_account() -> dict[str, Any] | None:
 
     path_candidates = [settings.google_drive_service_account_path]
     if settings.google_drive_allow_firebase_fallback:
-        path_candidates.extend([
-            settings.firebase_service_account_path,
-            os.getenv("GOOGLE_APPLICATION_CREDENTIALS", ""),
-        ])
+        path_candidates.extend(
+            [
+                settings.firebase_service_account_path,
+                os.getenv("GOOGLE_APPLICATION_CREDENTIALS", ""),
+            ]
+        )
     for raw_path in path_candidates:
         path = Path(str(raw_path or ""))
         if not raw_path or not path.exists():
@@ -278,29 +292,47 @@ class GoogleDriveArchive:
     def __init__(self) -> None:
         self.settings = get_settings()
         requested_mode = self.settings.google_drive_auth_mode or "service_account"
-        self.auth_mode = requested_mode if requested_mode in self.AUTH_MODES else "service_account"
+        self.auth_mode = (
+            requested_mode if requested_mode in self.AUTH_MODES else "service_account"
+        )
 
         self.service_account_info = load_drive_service_account()
-        self.service_account_email = str((self.service_account_info or {}).get("client_email") or "")
-        self.service_account_project_id = str((self.service_account_info or {}).get("project_id") or "")
+        self.service_account_email = str(
+            (self.service_account_info or {}).get("client_email") or ""
+        )
+        self.service_account_project_id = str(
+            (self.service_account_info or {}).get("project_id") or ""
+        )
 
         self.oauth_client_id = self.settings.google_drive_oauth_client_id
         self.oauth_client_secret = self.settings.google_drive_oauth_client_secret
         self.oauth_refresh_token = self.settings.google_drive_oauth_refresh_token
-        self.oauth_token_uri = self.settings.google_drive_oauth_token_uri or "https://oauth2.googleapis.com/token"
+        self.oauth_token_uri = (
+            self.settings.google_drive_oauth_token_uri
+            or "https://oauth2.googleapis.com/token"
+        )
         self.oauth_project_id = self.settings.google_drive_oauth_project_id
         self.oauth_user_email = self.settings.google_drive_oauth_user_email
 
         self.credential_project_id = (
-            self.oauth_project_id if self.auth_mode == "oauth_user" else self.service_account_project_id
+            self.oauth_project_id
+            if self.auth_mode == "oauth_user"
+            else self.service_account_project_id
         )
-        self.expected_project_id = self.settings.google_drive_expected_project_id or self.credential_project_id
+        self.expected_project_id = (
+            self.settings.google_drive_expected_project_id or self.credential_project_id
+        )
         self.project_aligned = bool(
             self.credential_project_id
-            and (not self.expected_project_id or self.credential_project_id == self.expected_project_id)
+            and (
+                not self.expected_project_id
+                or self.credential_project_id == self.expected_project_id
+            )
         )
         self.principal_email = (
-            self.oauth_user_email if self.auth_mode == "oauth_user" else self.service_account_email
+            self.oauth_user_email
+            if self.auth_mode == "oauth_user"
+            else self.service_account_email
         )
         self._credentials: Any | None = None
         self._credentials_lock = asyncio.Lock()
@@ -316,11 +348,17 @@ class GoogleDriveArchive:
         if self.auth_mode == "service_account" and not self.service_account_info:
             log.warning(
                 "Dedicated Google Drive service-account credentials are missing. Firebase fallback is %s.",
-                "enabled" if self.settings.google_drive_allow_firebase_fallback else "disabled",
+                "enabled"
+                if self.settings.google_drive_allow_firebase_fallback
+                else "disabled",
             )
         if self.auth_mode == "oauth_user" and not self._oauth_complete:
             log.warning("Google Drive OAuth user credentials are incomplete.")
-        if self.expected_project_id and self.credential_project_id and not self.project_aligned:
+        if (
+            self.expected_project_id
+            and self.credential_project_id
+            and not self.project_aligned
+        ):
             log.error(
                 "Drive credential project mismatch: expected %s but active credential project is %s.",
                 self.expected_project_id,
@@ -338,12 +376,18 @@ class GoogleDriveArchive:
 
     @property
     def configured(self) -> bool:
-        credential_ready = bool(self.service_account_info) if self.auth_mode == "service_account" else self._oauth_complete
+        credential_ready = (
+            bool(self.service_account_info)
+            if self.auth_mode == "service_account"
+            else self._oauth_complete
+        )
         return bool(credential_ready and self.project_aligned)
 
     @property
     def identity_label(self) -> str:
-        return "Google user OAuth" if self.auth_mode == "oauth_user" else "Service account"
+        return (
+            "Google user OAuth" if self.auth_mode == "oauth_user" else "Service account"
+        )
 
     def status_payload(self, *, folder_id: str = "") -> dict[str, Any]:
         return {
@@ -454,7 +498,9 @@ class GoogleDriveArchive:
             scopes=self.SCOPES,
         )
         if self.settings.google_drive_impersonate_user:
-            credentials = credentials.with_subject(self.settings.google_drive_impersonate_user)
+            credentials = credentials.with_subject(
+                self.settings.google_drive_impersonate_user
+            )
         return credentials
 
     async def _get_credentials(self) -> Any:
@@ -465,7 +511,7 @@ class GoogleDriveArchive:
 
         async with self._credentials_lock:
             if self._credentials is None:
-                self._credentials = await asyncio.to_thread(self._build_credentials_sync)
+                self._credentials = await run_blocking(self._build_credentials_sync)
             return self._credentials
 
     async def _get_service(self) -> Any:
@@ -480,9 +526,11 @@ class GoogleDriveArchive:
             def build_service() -> Any:
                 from googleapiclient.discovery import build
 
-                return build("drive", "v3", credentials=credentials, cache_discovery=False)
+                return build(
+                    "drive", "v3", credentials=credentials, cache_discovery=False
+                )
 
-            self._service = await asyncio.to_thread(build_service)
+            self._service = await run_blocking(build_service)
             return self._service
 
     async def test_folder(self, folder_id_or_url: str) -> dict[str, Any]:
@@ -504,7 +552,11 @@ class GoogleDriveArchive:
             if data.get("mimeType") != "application/vnd.google-apps.folder":
                 raise ValueError("The configured Google Drive ID is not a folder")
             capabilities = data.get("capabilities") or {}
-            about = service.about().get(fields="user(displayName,emailAddress),storageQuota(limit,usage)").execute()
+            about = (
+                service.about()
+                .get(fields="user(displayName,emailAddress),storageQuota(limit,usage)")
+                .execute()
+            )
             user = about.get("user") or {}
             storage = about.get("storageQuota") or {}
             return {
@@ -513,14 +565,15 @@ class GoogleDriveArchive:
                 "webViewLink": data.get("webViewLink"),
                 "driveId": data.get("driveId"),
                 "canAddChildren": capabilities.get("canAddChildren", True),
-                "authenticatedUserEmail": user.get("emailAddress") or self.principal_email,
+                "authenticatedUserEmail": user.get("emailAddress")
+                or self.principal_email,
                 "authenticatedUserName": user.get("displayName"),
                 "storageLimit": storage.get("limit"),
                 "storageUsage": storage.get("usage"),
             }
 
         try:
-            result = await asyncio.to_thread(work)
+            result = await run_blocking(work)
             if result.get("authenticatedUserEmail"):
                 self.principal_email = str(result["authenticatedUserEmail"])
             return result
@@ -583,7 +636,7 @@ class GoogleDriveArchive:
             return rows
 
         try:
-            return await asyncio.to_thread(work)
+            return await run_blocking(work)
         except DriveConfigurationError:
             raise
         except Exception as exc:
@@ -602,7 +655,9 @@ class GoogleDriveArchive:
         media_type: str = "",
         limit: int = 1000,
     ) -> dict[str, Any] | None:
-        files = await self.list_media_files(folder_id_or_url, media_type=media_type, limit=limit)
+        files = await self.list_media_files(
+            folder_id_or_url, media_type=media_type, limit=limit
+        )
         return random.choice(files) if files else None
 
     async def download_file(self, file_id: str, destination: str | Path) -> Path:
@@ -618,14 +673,16 @@ class GoogleDriveArchive:
 
             request = service.files().get_media(fileId=file_id, supportsAllDrives=True)
             with path.open("wb") as handle:
-                downloader = MediaIoBaseDownload(handle, request, chunksize=5 * 1024 * 1024)
+                downloader = MediaIoBaseDownload(
+                    handle, request, chunksize=5 * 1024 * 1024
+                )
                 done = False
                 while not done:
                     _, done = downloader.next_chunk()
             return path
 
         try:
-            return await asyncio.to_thread(work)
+            return await run_blocking(work)
         except DriveConfigurationError:
             raise
         except Exception as exc:
@@ -655,7 +712,7 @@ class GoogleDriveArchive:
             )
 
         try:
-            return await asyncio.to_thread(work)
+            return await run_blocking(work)
         except DriveConfigurationError:
             raise
         except Exception as exc:
@@ -667,7 +724,9 @@ class GoogleDriveArchive:
                 raise self._normalize_http_error(exc) from exc
             raise
 
-    async def open_file_stream(self, file_id: str, *, range_header: str = "") -> tuple[Any, Any]:
+    async def open_file_stream(
+        self, file_id: str, *, range_header: str = ""
+    ) -> tuple[Any, Any]:
         """Open an authenticated streaming response for a Drive file.
 
         The returned AuthorizedSession and Response must both be closed by the
@@ -677,7 +736,9 @@ class GoogleDriveArchive:
             raise ValueError("Google Drive file ID is required")
         credentials = await self._get_credentials()
         normalized_range = str(range_header or "").strip()
-        if normalized_range and not re.fullmatch(r"bytes=\d*-\d*", normalized_range, re.IGNORECASE):
+        if normalized_range and not re.fullmatch(
+            r"bytes=\d*-\d*", normalized_range, re.IGNORECASE
+        ):
             normalized_range = ""
 
         def work() -> tuple[Any, Any]:
@@ -707,7 +768,7 @@ class GoogleDriveArchive:
                 )
             return session, response
 
-        return await asyncio.to_thread(work)
+        return await run_blocking(work)
 
     async def upload_file(
         self,
@@ -761,12 +822,16 @@ class GoogleDriveArchive:
                 ).execute()
             created["public"] = bool(make_public)
             if make_public:
-                created["publicContentUrl"] = f"https://drive.google.com/uc?id={created['id']}&export=download"
-                created["publicThumbnailUrl"] = f"https://drive.google.com/thumbnail?id={created['id']}&sz=w1000"
+                created["publicContentUrl"] = (
+                    f"https://drive.google.com/uc?id={created['id']}&export=download"
+                )
+                created["publicThumbnailUrl"] = (
+                    f"https://drive.google.com/thumbnail?id={created['id']}&sz=w1000"
+                )
             return created
 
         try:
-            return await asyncio.to_thread(work)
+            return await run_blocking(work)
         except DriveConfigurationError:
             raise
         except Exception as exc:
@@ -787,7 +852,7 @@ class GoogleDriveArchive:
             service.files().delete(fileId=file_id, supportsAllDrives=True).execute()
 
         try:
-            await asyncio.to_thread(work)
+            await run_blocking(work)
         except DriveConfigurationError:
             raise
         except Exception as exc:

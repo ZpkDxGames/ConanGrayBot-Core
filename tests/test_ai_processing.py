@@ -5,10 +5,9 @@ import unittest
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from backend import ai_providers
+from backend import ai_providers, presentation
 from backend import bot as bot_module
 from backend import config as config_module
-from backend import presentation
 from backend.config import get_settings
 from backend.firebase_client import MemoryStore, merge_bot_config
 
@@ -53,7 +52,9 @@ class FakeChannel:
 class FakeMessage:
     _next_id = 100
 
-    def __init__(self, *, author, channel, guild, content, mentions=None, reference=None):
+    def __init__(
+        self, *, author, channel, guild, content, mentions=None, reference=None
+    ):
         self.id = FakeMessage._next_id
         FakeMessage._next_id += 1
         self.author = author
@@ -96,13 +97,19 @@ class BotHarness:
         bot_module.ConanBot._note_talkin_activity(self, guild_id, channel_id)
 
     async def _handle_weather_chat(self, message, config, text):
-        return await bot_module.ConanBot._handle_weather_chat(self, message, config, text)
+        return await bot_module.ConanBot._handle_weather_chat(
+            self, message, config, text
+        )
 
     def _weather_location_for_user(self, config, user_id, explicit_location=""):
-        return bot_module.ConanBot._weather_location_for_user(config, user_id, explicit_location)
+        return bot_module.ConanBot._weather_location_for_user(
+            config, user_id, explicit_location
+        )
 
     async def _start_spontaneous_conversation(self, guild, channel, config):
-        return await bot_module.ConanBot._start_spontaneous_conversation(self, guild, channel, config)
+        return await bot_module.ConanBot._start_spontaneous_conversation(
+            self, guild, channel, config
+        )
 
 
 class AIOutputTests(unittest.TestCase):
@@ -125,18 +132,30 @@ class AIOutputTests(unittest.TestCase):
             ai_providers._clean_model_output("User Safety: safe", "test")
 
     def test_qwen_and_nvidia_are_blocked(self):
-        self.assertTrue(ai_providers._is_blocked_openrouter_model("qwen/qwen3-coder:free"))
-        self.assertTrue(ai_providers._is_blocked_openrouter_model("nvidia/llama-nemotron"))
-        self.assertFalse(ai_providers._is_blocked_openrouter_model("meta-llama/llama-3.3-70b-instruct:free"))
+        self.assertTrue(
+            ai_providers._is_blocked_openrouter_model("qwen/qwen3-coder:free")
+        )
+        self.assertTrue(
+            ai_providers._is_blocked_openrouter_model("nvidia/llama-nemotron")
+        )
+        self.assertFalse(
+            ai_providers._is_blocked_openrouter_model(
+                "meta-llama/llama-3.3-70b-instruct:free"
+            )
+        )
 
     def test_workspace_openrouter_config_is_explicit_and_safe(self):
         settings = get_settings()
         models = [settings.openrouter_model, *(settings.openrouter_models or [])]
-        self.assertNotIn(settings.openrouter_model, {"openrouter/free", "openrouter/auto"})
+        self.assertNotIn(
+            settings.openrouter_model, {"openrouter/free", "openrouter/auto"}
+        )
         self.assertTrue(models)
         for model in models:
             self.assertFalse(ai_providers._is_blocked_openrouter_model(model))
-        self.assertIn("nvidia", [item.lower() for item in settings.openrouter_ignored_providers])
+        self.assertIn(
+            "nvidia", [item.lower() for item in settings.openrouter_ignored_providers]
+        )
 
     def test_existing_guild_configs_receive_talkin_defaults(self):
         merged = merge_bot_config({"ai": {"channelId": "123"}})
@@ -147,18 +166,22 @@ class AIOutputTests(unittest.TestCase):
         self.assertTrue(merged["ai"]["spontaneousConversationEnabled"])
 
     def test_previous_default_persona_migrates_once(self):
-        merged = merge_bot_config({
-            "ai": {
-                "personality": config_module.AI_PREVIOUS_DEFAULT_PERSONALITY,
-                "responseLength": "balanced",
-                "toneStyle": "adaptive",
-                "emojiStyle": "occasional",
-                "markdownStyle": "natural",
-                "temperature": 0.8,
-                "maxOutputTokens": 650,
+        merged = merge_bot_config(
+            {
+                "ai": {
+                    "personality": config_module.AI_PREVIOUS_DEFAULT_PERSONALITY,
+                    "responseLength": "balanced",
+                    "toneStyle": "adaptive",
+                    "emojiStyle": "occasional",
+                    "markdownStyle": "natural",
+                    "temperature": 0.8,
+                    "maxOutputTokens": 650,
+                }
             }
-        })
-        self.assertEqual(merged["ai"]["personality"], config_module.AI_CONAN_BEST_FRIEND_PERSONALITY)
+        )
+        self.assertEqual(
+            merged["ai"]["personality"], config_module.AI_CONAN_BEST_FRIEND_PERSONALITY
+        )
         self.assertEqual(merged["ai"]["responseLength"], "brief")
         self.assertEqual(merged["ai"]["toneStyle"], "natural")
         self.assertEqual(merged["ai"]["emojiStyle"], "rare")
@@ -167,38 +190,57 @@ class AIOutputTests(unittest.TestCase):
         self.assertEqual(merged["ai"]["personaPreset"], "public_conan")
         self.assertEqual(merged["ai"]["naturalnessLevel"], 92)
         self.assertEqual(merged["ai"]["questionFrequency"], 18)
-        self.assertEqual(merged["ai"]["personaProfileVersion"], config_module.AI_PERSONA_PROFILE_VERSION)
+        self.assertEqual(
+            merged["ai"]["personaProfileVersion"],
+            config_module.AI_PERSONA_PROFILE_VERSION,
+        )
 
     def test_custom_personality_survives_persona_migration(self):
-        merged = merge_bot_config({"ai": {"personality": "custom guild persona", "responseLength": "detailed"}})
+        merged = merge_bot_config(
+            {
+                "ai": {
+                    "personality": "custom guild persona",
+                    "responseLength": "detailed",
+                }
+            }
+        )
         self.assertEqual(merged["ai"]["personality"], "custom guild persona")
         self.assertEqual(merged["ai"]["responseLength"], "detailed")
         self.assertEqual(merged["ai"]["personaPreset"], "custom")
 
     def test_v2_shipped_persona_migrates_to_natural_profile(self):
-        merged = merge_bot_config({
-            "ai": {
-                "personaProfileVersion": 2,
-                "personality": config_module.AI_V2_BEST_FRIEND_PERSONALITY,
-                "structureInstructions": config_module.AI_V2_STRUCTURE_INSTRUCTIONS,
-                "toneStyle": "casual",
-                "catchphraseCooldownTurns": 8,
+        merged = merge_bot_config(
+            {
+                "ai": {
+                    "personaProfileVersion": 2,
+                    "personality": config_module.AI_V2_BEST_FRIEND_PERSONALITY,
+                    "structureInstructions": config_module.AI_V2_STRUCTURE_INSTRUCTIONS,
+                    "toneStyle": "casual",
+                    "catchphraseCooldownTurns": 8,
+                }
             }
-        })
-        self.assertEqual(merged["ai"]["personality"], config_module.AI_CONAN_BEST_FRIEND_PERSONALITY)
-        self.assertEqual(merged["ai"]["structureInstructions"], config_module.AI_CONAN_STRUCTURE_INSTRUCTIONS)
+        )
+        self.assertEqual(
+            merged["ai"]["personality"], config_module.AI_CONAN_BEST_FRIEND_PERSONALITY
+        )
+        self.assertEqual(
+            merged["ai"]["structureInstructions"],
+            config_module.AI_CONAN_STRUCTURE_INSTRUCTIONS,
+        )
         self.assertEqual(merged["ai"]["toneStyle"], "natural")
         self.assertEqual(merged["ai"]["catchphraseCooldownTurns"], 10)
 
     def test_naturalness_controls_are_injected_into_prompt(self):
         ai_config = dict(config_module.DEFAULT_BOT_CONFIG["ai"])
-        ai_config.update({
-            "humorLevel": 81,
-            "questionFrequency": 12,
-            "avoidPhrases": ["customer support voice"],
-            "recurringBits": ["tiny violin"],
-            "styleExamples": {"casual": "well. there it is"},
-        })
+        ai_config.update(
+            {
+                "humorLevel": 81,
+                "questionFrequency": 12,
+                "avoidPhrases": ["customer support voice"],
+                "recurringBits": ["tiny violin"],
+                "styleExamples": {"casual": "well. there it is"},
+            }
+        )
         prompt = ai_providers._build_system_prompt(
             config_module.AI_CONAN_BEST_FRIEND_PERSONALITY,
             ai_config,
@@ -254,48 +296,59 @@ class GameMessageTemplateTests(unittest.TestCase):
         }
         for feature, template_key in expected.items():
             with self.subTest(feature=feature):
-                self.assertEqual(bot_module.template_key_for_feature(feature, "game"), template_key)
+                self.assertEqual(
+                    bot_module.template_key_for_feature(feature, "game"), template_key
+                )
 
     def test_game_profiles_inherit_shared_game_profile(self):
-        config = merge_bot_config({
-            "messageTemplates": {
-                "game": {
-                    "inheritGlobal": False,
-                    "footerTemplate": "shared game footer",
-                    "showSourceNote": False,
-                },
-                "game_coinflip": {"inheritGlobal": True},
+        config = merge_bot_config(
+            {
+                "messageTemplates": {
+                    "game": {
+                        "inheritGlobal": False,
+                        "footerTemplate": "shared game footer",
+                        "showSourceNote": False,
+                    },
+                    "game_coinflip": {"inheritGlobal": True},
+                }
             }
-        })
+        )
         profile = presentation.template_profile(config, "game_coinflip", "game")
         self.assertEqual(profile["footerTemplate"], "shared game footer")
         self.assertFalse(profile["showSourceNote"])
 
     def test_shipped_game_profile_migrates_to_clean_footer_defaults(self):
-        config = merge_bot_config({
-            "messageTemplates": {
-                "game": {
-                    "inheritGlobal": True,
-                    "titleTemplate": "{title}",
-                    "descriptionTemplate": "{description}",
-                    "footerTemplate": "{footer}",
+        config = merge_bot_config(
+            {
+                "messageTemplates": {
+                    "game": {
+                        "inheritGlobal": True,
+                        "titleTemplate": "{title}",
+                        "descriptionTemplate": "{description}",
+                        "footerTemplate": "{footer}",
+                    }
                 }
             }
-        })
+        )
         self.assertFalse(config["messageTemplates"]["game"]["inheritGlobal"])
         self.assertFalse(config["messageTemplates"]["game"]["showSourceNote"])
         self.assertEqual(config["presentation"]["messageTemplateProfileVersion"], 2)
 
     def test_custom_game_footer_survives_profile_migration(self):
-        config = merge_bot_config({
-            "messageTemplates": {
-                "game": {
-                    "inheritGlobal": False,
-                    "footerTemplate": "my custom game footer",
+        config = merge_bot_config(
+            {
+                "messageTemplates": {
+                    "game": {
+                        "inheritGlobal": False,
+                        "footerTemplate": "my custom game footer",
+                    }
                 }
             }
-        })
-        self.assertEqual(config["messageTemplates"]["game"]["footerTemplate"], "my custom game footer")
+        )
+        self.assertEqual(
+            config["messageTemplates"]["game"]["footerTemplate"],
+            "my custom game footer",
+        )
         self.assertFalse(config["messageTemplates"]["game"]["inheritGlobal"])
 
     def test_game_footer_hides_ai_narration_source_by_default(self):
@@ -312,14 +365,16 @@ class GameMessageTemplateTests(unittest.TestCase):
         self.assertNotIn("ai narration", rendered["footer"].lower())
 
     def test_source_note_can_be_enabled_per_game(self):
-        config = merge_bot_config({
-            "messageTemplates": {
-                "game_coinflip": {
-                    "inheritGlobal": False,
-                    "showSourceNote": True,
+        config = merge_bot_config(
+            {
+                "messageTemplates": {
+                    "game_coinflip": {
+                        "inheritGlobal": False,
+                        "showSourceNote": True,
+                    }
                 }
             }
-        })
+        )
         rendered = presentation.render_feedback_template(
             config,
             title="The coin has spoken",
@@ -331,16 +386,18 @@ class GameMessageTemplateTests(unittest.TestCase):
         self.assertIn("AI narration: gemini", rendered["footer"])
 
     def test_blank_footer_removes_footer_even_when_metadata_exists(self):
-        config = merge_bot_config({
-            "messageTemplates": {
-                "game_guesssong": {
-                    "inheritGlobal": False,
-                    "footerTemplate": "",
-                    "showProvider": False,
-                    "showSourceNote": False,
+        config = merge_bot_config(
+            {
+                "messageTemplates": {
+                    "game_guesssong": {
+                        "inheritGlobal": False,
+                        "footerTemplate": "",
+                        "showProvider": False,
+                        "showSourceNote": False,
+                    }
                 }
             }
-        })
+        )
         rendered = presentation.render_feedback_template(
             config,
             title="Mystery track",
@@ -353,17 +410,19 @@ class GameMessageTemplateTests(unittest.TestCase):
         self.assertEqual(rendered["footer"], "")
 
     def test_clearing_global_embed_footer_is_respected(self):
-        config = merge_bot_config({
-            "appearance": {"embedFooter": ""},
-            "messageTemplates": {
-                "game": {
-                    "inheritGlobal": False,
-                    "footerTemplate": "{footer}",
-                    "showProvider": False,
-                    "showSourceNote": False,
-                }
-            },
-        })
+        config = merge_bot_config(
+            {
+                "appearance": {"embedFooter": ""},
+                "messageTemplates": {
+                    "game": {
+                        "inheritGlobal": False,
+                        "footerTemplate": "{footer}",
+                        "showProvider": False,
+                        "showSourceNote": False,
+                    }
+                },
+            }
+        )
         rendered = presentation.render_feedback_template(
             config,
             title="Game",
@@ -408,11 +467,15 @@ class TalkinRoutingTests(unittest.IsolatedAsyncioTestCase):
         self.deliveries = []
 
         async def fake_ask(config, history, user_text, context):
-            self.calls.append({"history": list(history), "user_text": user_text, "context": context})
+            self.calls.append(
+                {"history": list(history), "user_text": user_text, "context": context}
+            )
             return "A natural reply", "gemini"
 
         async def fake_send(message, config, text, provider=None, **kwargs):
-            self.deliveries.append({"message": message, "text": text, "provider": provider, **kwargs})
+            self.deliveries.append(
+                {"message": message, "text": text, "provider": provider, **kwargs}
+            )
             return [SimpleNamespace(id=9000 + len(self.deliveries))]
 
         self.ask_patch = patch.object(bot_module, "ask_ai", fake_ask)
@@ -491,14 +554,20 @@ class TalkinRoutingTests(unittest.IsolatedAsyncioTestCase):
             channel=FakeChannel("talk", "cat"),
             guild=self.guild,
             content="no that is not what i meant",
-            reference=self.reply_reference(self.harness.user, "yeah, nerd badge looks good on you"),
+            reference=self.reply_reference(
+                self.harness.user, "yeah, nerd badge looks good on you"
+            ),
         )
         await bot_module.ConanBot._handle_ai_message(self.harness, message)
         self.assertEqual(len(self.calls), 1)
         self.assertIn("direct reply to one of your messages", self.calls[0]["context"])
-        self.assertIn("direct reply to one of your previous messages", self.calls[0]["context"])
+        self.assertIn(
+            "direct reply to one of your previous messages", self.calls[0]["context"]
+        )
 
-    async def test_explicit_name_call_can_join_reply_to_other_user_without_misattributing_target(self):
+    async def test_explicit_name_call_can_join_reply_to_other_user_without_misattributing_target(
+        self,
+    ):
         toni = FakeUser(2, "Toni")
         message = FakeMessage(
             author=FakeUser(1, "Gina"),
@@ -514,8 +583,18 @@ class TalkinRoutingTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_talkin_history_is_shared_between_called_users(self):
         channel = FakeChannel("talk", "cat")
-        first = FakeMessage(author=FakeUser(1, "Gina"), channel=channel, guild=self.guild, content="conan coffee?")
-        second = FakeMessage(author=FakeUser(2, "Toni"), channel=channel, guild=self.guild, content="conan regular machine")
+        first = FakeMessage(
+            author=FakeUser(1, "Gina"),
+            channel=channel,
+            guild=self.guild,
+            content="conan coffee?",
+        )
+        second = FakeMessage(
+            author=FakeUser(2, "Toni"),
+            channel=channel,
+            guild=self.guild,
+            content="conan regular machine",
+        )
 
         await bot_module.ConanBot._handle_ai_message(self.harness, first)
         await bot_module.ConanBot._handle_ai_message(self.harness, second)
@@ -560,22 +639,30 @@ class TalkinRoutingTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(result)
         self.assertEqual(channel.sent[0].content, "A natural reply")
         self.assertIn("choosing to speak first", self.calls[0]["context"])
-        session = await self.harness.store.get_branch_session("1", "talk", "talkin-group")
+        session = await self.harness.store.get_branch_session(
+            "1", "talk", "talkin-group"
+        )
         self.assertTrue(session["messages"][-1]["spontaneous"])
         self.assertEqual(session["messages"][-1]["content"], "A natural reply")
 
-
     async def test_spontaneous_scheduler_waits_until_channel_is_idle(self):
         channel = FakeChannel("123", "cat")
-        guild = SimpleNamespace(id=1, get_channel=lambda channel_id: channel if channel_id == int(channel.id) else None)
+        guild = SimpleNamespace(
+            id=1,
+            get_channel=lambda channel_id: (
+                channel if channel_id == int(channel.id) else None
+            ),
+        )
         self.harness.guilds = [guild]
-        self.config["ai"].update({
-            "channelId": "123",
-            "spontaneousCheckMinutes": 1,
-            "spontaneousIdleMinutes": 5,
-            "spontaneousCooldownMinutes": 15,
-            "spontaneousChancePercent": 100,
-        })
+        self.config["ai"].update(
+            {
+                "channelId": "123",
+                "spontaneousCheckMinutes": 1,
+                "spontaneousIdleMinutes": 5,
+                "spontaneousCooldownMinutes": 15,
+                "spontaneousChancePercent": 100,
+            }
+        )
         now = asyncio.get_running_loop().time()
         key = "1:123"
         self.harness.talkin_last_activity[key] = now
@@ -586,15 +673,22 @@ class TalkinRoutingTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_spontaneous_scheduler_starts_after_idle_threshold(self):
         channel = FakeChannel("123", "cat")
-        guild = SimpleNamespace(id=1, get_channel=lambda channel_id: channel if channel_id == int(channel.id) else None)
+        guild = SimpleNamespace(
+            id=1,
+            get_channel=lambda channel_id: (
+                channel if channel_id == int(channel.id) else None
+            ),
+        )
         self.harness.guilds = [guild]
-        self.config["ai"].update({
-            "channelId": "123",
-            "spontaneousCheckMinutes": 1,
-            "spontaneousIdleMinutes": 5,
-            "spontaneousCooldownMinutes": 15,
-            "spontaneousChancePercent": 100,
-        })
+        self.config["ai"].update(
+            {
+                "channelId": "123",
+                "spontaneousCheckMinutes": 1,
+                "spontaneousIdleMinutes": 5,
+                "spontaneousCooldownMinutes": 15,
+                "spontaneousChancePercent": 100,
+            }
+        )
         now = asyncio.get_running_loop().time()
         key = "1:123"
         self.harness.talkin_last_activity[key] = now - 301
@@ -628,7 +722,9 @@ class TalkinRoutingTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.deliveries[0]["text"], "Conan said: A natural reply")
         self.assertIn("directly @mentioned", self.calls[0]["context"])
 
-    async def test_weather_question_uses_deterministic_weather_even_when_ai_is_paused(self):
+    async def test_weather_question_uses_deterministic_weather_even_when_ai_is_paused(
+        self,
+    ):
         self.config["ai"]["enabled"] = False
         self.config["weather"] = {
             "enabled": True,
