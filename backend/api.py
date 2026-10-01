@@ -7,10 +7,12 @@ from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 
+from .http import close_sessions
 from .logging import configure_logging
 from .management import admin, configuration, discord, records, runtime, stream
 from .management.auth import require_staff
 from .migrations import RevisionConflict
+from .providers import manager
 from .version import VERSION
 
 configure_logging()
@@ -25,6 +27,7 @@ async def lifespan(app):
     finally:
         async with runtime.bot_lifecycle_lock:
             await runtime._stop_discord_bot_locked()
+        await close_sessions()
 
 
 app = FastAPI(title="ConanGrayBot Core", version=VERSION, lifespan=lifespan)
@@ -149,6 +152,7 @@ async def diagnostics(actor: str = Depends(require_staff)):
             "openrouter": bool(runtime.settings.openrouter_api_key),
             "groq": bool(runtime.settings.groq_api_key),
         },
+        "providerMetrics": manager.diagnostics(),
         "weatherConfigured": bool(runtime.settings.openweather_api_key),
         "driveConfigured": runtime.drive_archive.configured,
     }

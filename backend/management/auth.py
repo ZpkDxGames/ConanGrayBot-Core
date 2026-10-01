@@ -1,6 +1,7 @@
 import discord
 from fastapi import Depends, HTTPException
 
+from ..http import pooled_session
 from ..security import require_service
 from . import runtime
 
@@ -8,7 +9,28 @@ from . import runtime
 async def require_staff(actor: str = Depends(require_service)) -> str:
     bot = runtime.discord_bot
     if not bot or not bot.is_ready():
-        raise HTTPException(503, "Authorization service unavailable")
+        if not runtime.settings.discord_token or not runtime.settings.staff_role_id:
+            raise HTTPException(503, "Authorization service unavailable")
+        try:
+            async with pooled_session() as session:
+                async with session.get(
+                    f"https://discord.com/api/v10/guilds/{runtime.settings.guild_id}/members/{actor}",
+                    headers={"Authorization": "Bot " + runtime.settings.discord_token},
+                ) as response:
+                    if response.status in {403, 404}:
+                        raise HTTPException(403, "Staff access denied")
+                    if response.status != 200:
+                        raise HTTPException(503, "Authorization service unavailable")
+                    member_data = await response.json()
+                    if runtime.settings.staff_role_id not in member_data.get(
+                        "roles", []
+                    ):
+                        raise HTTPException(403, "Staff access denied")
+                    return actor
+        except HTTPException:
+            raise
+        except Exception:
+            raise HTTPException(503, "Authorization service unavailable") from None
     guild = bot.get_guild(int(runtime.settings.guild_id))
     if not guild:
         raise HTTPException(403, "Guild access denied")

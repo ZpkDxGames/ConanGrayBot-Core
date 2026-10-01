@@ -4,11 +4,15 @@ import asyncio
 import logging
 import re
 import time
+from contextvars import ContextVar
+from dataclasses import replace
 from typing import Any
 
 import aiohttp
 
 from .config import get_settings
+from .http import pooled_session
+from .providers import manager
 
 log = logging.getLogger("conan.ai")
 
@@ -889,8 +893,7 @@ async def _discover_openrouter_models(
                 params = {"output_modalities": "text", "sort": "throughput-high-to-low"}
                 if free_only:
                     params["max_price"] = "0"
-                timeout = aiohttp.ClientTimeout(total=8)
-                async with aiohttp.ClientSession(timeout=timeout) as session:
+                async with pooled_session() as session:
                     async with session.get(
                         "https://openrouter.ai/api/v1/models",
                         headers=headers,
@@ -899,7 +902,7 @@ async def _discover_openrouter_models(
                         data = await resp.json(content_type=None)
                         if resp.status >= 400:
                             raise AIProviderError(
-                                f"OpenRouter model catalog HTTP {resp.status}: {str(data)[:220]}"
+                                f"OpenRouter model catalog HTTP {resp.status}"
                             )
                         rows = (
                             (data.get("data") or []) if isinstance(data, dict) else []
@@ -943,8 +946,12 @@ def _dedupe(items: list[str]) -> list[str]:
 
 
 async def _openrouter_candidates() -> list[str]:
-    settings = get_settings()
-    configured = list(settings.openrouter_models or [])
+    settings = provider_settings()
+    configured = (
+        []
+        if _model_selection.get().get("openrouter")
+        else list(settings.openrouter_models or [])
+    )
     if settings.openrouter_model:
         configured.insert(0, settings.openrouter_model)
     configured = _dedupe(configured)
@@ -968,6 +975,8 @@ async def _openrouter_candidates() -> list[str]:
     for model in rejected:
         log.warning("Ignoring blocked OpenRouter model configuration: %s", model)
 
+    if not settings.openrouter_discovery_enabled:
+        return explicit_safe[:6]
     discovered: list[str] = []
     try:
         discovered = await _discover_openrouter_models(
@@ -985,7 +994,7 @@ async def _openrouter_candidates() -> list[str]:
     return candidates[:6]
 
 
-async def ask_ai(
+async def _ask_ai(
     config: dict[str, Any],
     history: list[dict[str, str]],
     user_text: str,
@@ -1015,6 +1024,9 @@ async def ask_ai(
 
     errors: list[str] = []
     for provider in provider_order:
+        if not manager.available(provider):
+            continue
+        started = time.monotonic()
         try:
             answer = ""
             if provider == "gemini" and settings.gemini_api_key:
@@ -1024,12 +1036,14 @@ async def ask_ai(
             elif provider == "groq" and settings.groq_api_key:
                 answer = await _ask_groq(messages, max_tokens, temperature)
             if answer:
+                manager.success(provider, started)
                 return _shape_persona_output(
                     answer, ai_config, history, user_text
                 ), provider
         except Exception as exc:
-            log.warning("%s provider failed: %s", provider, exc)
-            errors.append(f"{provider}: {exc}")
+            manager.failure(provider)
+            log.warning("%s provider failed (%s)", provider, type(exc).__name__)
+            errors.append(f"{provider}: unavailable")
 
     configured = [
         name
@@ -1048,7 +1062,7 @@ async def ask_ai(
 async def _ask_gemini(
     messages: list[dict[str, str]], max_tokens: int, temperature: float
 ) -> str:
-    settings = get_settings()
+    settings = provider_settings()
     system_parts = []
     contents = []
     for item in messages:
@@ -1066,15 +1080,13 @@ async def _ask_gemini(
         payload["systemInstruction"] = {"parts": system_parts}
 
     url = f"https://generativelanguage.googleapis.com/v1beta/models/{settings.gemini_model}:generateContent"
-    async with aiohttp.ClientSession(
-        timeout=aiohttp.ClientTimeout(total=42)
-    ) as session:
+    async with pooled_session() as session:
         async with session.post(
             url, params={"key": settings.gemini_api_key}, json=payload
         ) as resp:
             data = await resp.json(content_type=None)
             if resp.status >= 400:
-                raise AIProviderError(f"Gemini HTTP {resp.status}: {str(data)[:240]}")
+                raise AIProviderError(f"Gemini HTTP {resp.status}")
             try:
                 candidate = data["candidates"][0]
                 parts = candidate["content"]["parts"]
@@ -1089,15 +1101,13 @@ async def _ask_gemini(
             except AIProviderError:
                 raise
             except Exception as exc:
-                raise AIProviderError(
-                    f"Gemini malformed response: {str(data)[:240]}"
-                ) from exc
+                raise AIProviderError("Gemini malformed response") from exc
 
 
 async def _ask_openrouter(
     messages: list[dict[str, str]], max_tokens: int, temperature: float
 ) -> str:
-    settings = get_settings()
+    settings = provider_settings()
     headers = {
         "Authorization": f"Bearer {settings.openrouter_api_key}",
         "Content-Type": "application/json",
@@ -1123,9 +1133,7 @@ async def _ask_openrouter(
     errors: list[str] = []
     loop = asyncio.get_running_loop()
     deadline = loop.time() + 50.0
-    async with aiohttp.ClientSession(
-        timeout=aiohttp.ClientTimeout(total=None)
-    ) as session:
+    async with pooled_session() as session:
         for model in candidates:
             if _is_blocked_openrouter_model(model, blocked_parts):
                 continue
@@ -1156,7 +1164,7 @@ async def _ask_openrouter(
                 ) as resp:
                     data = await resp.json(content_type=None)
                     if resp.status >= 400:
-                        errors.append(f"{model}: HTTP {resp.status} {str(data)[:150]}")
+                        errors.append(f"{model}: HTTP {resp.status}")
                         continue
                     used_model = str(data.get("model") or model)
                     if _is_blocked_openrouter_model(used_model, blocked_parts):
@@ -1188,7 +1196,7 @@ async def _ask_openrouter(
 async def _ask_groq(
     messages: list[dict[str, str]], max_tokens: int, temperature: float
 ) -> str:
-    settings = get_settings()
+    settings = provider_settings()
     headers = {
         "Authorization": f"Bearer {settings.groq_api_key}",
         "Content-Type": "application/json",
@@ -1199,9 +1207,7 @@ async def _ask_groq(
         "max_completion_tokens": max_tokens,
         "temperature": temperature,
     }
-    async with aiohttp.ClientSession(
-        timeout=aiohttp.ClientTimeout(total=42)
-    ) as session:
+    async with pooled_session() as session:
         async with session.post(
             "https://api.groq.com/openai/v1/chat/completions",
             headers=headers,
@@ -1209,11 +1215,49 @@ async def _ask_groq(
         ) as resp:
             data = await resp.json(content_type=None)
             if resp.status >= 400:
-                raise AIProviderError(f"Groq HTTP {resp.status}: {str(data)[:240]}")
+                raise AIProviderError(f"Groq HTTP {resp.status}")
             try:
                 raw_content = data["choices"][0]["message"].get("content")
             except Exception as exc:
-                raise AIProviderError(
-                    f"Groq malformed response: {str(data)[:240]}"
-                ) from exc
+                raise AIProviderError("Groq malformed response") from exc
             return _clean_model_output(raw_content, "Groq")
+
+
+_model_selection: ContextVar[dict[str, str]] = ContextVar("provider_models", default={})
+
+
+def provider_settings():
+    choices = _model_selection.get()
+    settings = get_settings()
+    return replace(
+        settings,
+        gemini_model=choices.get("gemini") or settings.gemini_model,
+        groq_model=choices.get("groq") or settings.groq_model,
+        openrouter_model=choices.get("openrouter") or settings.openrouter_model,
+    )
+
+
+async def ask_ai(
+    config: dict[str, Any],
+    history: list[dict[str, str]],
+    user_text: str,
+    conversation_context: str | None = None,
+) -> tuple[str, str]:
+    ai = config.get("ai", {})
+    token = _model_selection.set(dict(ai.get("models") or {}))
+    try:
+        budget = max(4000, min(int(ai.get("maxPromptCharacters") or 24000), 100000))
+        text = str(user_text)[:4000]
+        retained: list[dict[str, str]] = []
+        used = len(text) + len(str(ai.get("personality") or ""))
+        for message in reversed(history[-36:]):
+            size = len(str(message.get("content") or ""))
+            if used + size > budget:
+                break
+            retained.insert(0, message)
+            used += size
+        context = str(conversation_context or "")[: max(0, budget - used)]
+        async with asyncio.timeout(50):
+            return await _ask_ai(config, retained, text, context)
+    finally:
+        _model_selection.reset(token)
