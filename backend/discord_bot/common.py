@@ -204,8 +204,8 @@ def configured_admin_role_id(
 ) -> str:
     settings = settings or get_settings()
     return str(
-        config.get("admin", {}).get("roleId")
-        or settings.staff_role_id
+        settings.staff_role_id
+        or config.get("admin", {}).get("roleId")
         or DEFAULT_ADMIN_ROLE_ID
     )
 

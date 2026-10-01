@@ -180,8 +180,8 @@ def make_media_command(bot: ConanBot) -> app_commands.Command:
             stream_url = build_drive_stream_url(file_id, file_name)
             if not stream_url:
                 raise ValueError(
-                    "Large-media streaming is not configured. Set PUBLIC_BASE_URL and keep a dashboard, "
-                    "Discord, or MEDIA_STREAM_SIGNING_KEY secret configured."
+                    "Large-media streaming is not configured. Set PUBLIC_BASE_URL and an independent "
+                    "MEDIA_STREAM_SIGNING_KEY."
                 )
             size_text = format_file_size(size_value)
             stream_fields = list(fields)
@@ -375,15 +375,13 @@ def make_media_command(bot: ConanBot) -> app_commands.Command:
                     "requesterId": str(interaction.user.id),
                 },
             )
-        except Exception as exc:
+        except Exception:
             log.exception("Could not download/send random Google Drive media")
             await send_interaction_feedback(
                 interaction,
                 config,
                 title="Could not send that media file",
-                description=str(exc)
-                if isinstance(exc, ValueError)
-                else "The file could not be downloaded or attached to Discord.",
+                description="The file could not be downloaded or attached to Discord.",
                 kind="error",
                 fields=fields,
                 ephemeral=True,

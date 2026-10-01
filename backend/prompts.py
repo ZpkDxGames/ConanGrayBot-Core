@@ -6,7 +6,7 @@ from typing import Any
 def bounded_messages(
     messages: list[dict[str, Any]], limit: int
 ) -> list[dict[str, str]]:
-    limit = max(4000, min(limit, 100000))
+    limit = max(1000, min(limit, 100000))
     system = [row for row in messages if row.get("role") == "system"]
     conversation = [row for row in messages if row.get("role") != "system"]
     system_text = "\n\n".join(str(row.get("content") or "") for row in system)[

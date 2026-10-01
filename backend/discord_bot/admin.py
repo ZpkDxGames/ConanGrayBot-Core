@@ -150,7 +150,9 @@ def make_admin_group(bot: ConanBot) -> app_commands.Group:
             return
         guild_id = str(interaction.guild_id or bot.settings.guild_id or "global")
         config.setdefault("ai", {})["enabled"] = False
-        await bot.store.set_config(guild_id, config)
+        await bot.store.set_config(
+            guild_id, config, expected_revision=config["revision"]
+        )
         await bot.store.add_log(
             guild_id,
             "ai.paused",
@@ -175,7 +177,9 @@ def make_admin_group(bot: ConanBot) -> app_commands.Group:
             return
         guild_id = str(interaction.guild_id or bot.settings.guild_id or "global")
         config.setdefault("ai", {})["enabled"] = True
-        await bot.store.set_config(guild_id, config)
+        await bot.store.set_config(
+            guild_id, config, expected_revision=config["revision"]
+        )
         await bot.store.add_log(
             guild_id,
             "ai.resumed",

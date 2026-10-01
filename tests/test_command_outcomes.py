@@ -143,3 +143,46 @@ async def test_disabled_command_guard_is_ephemeral(monkeypatch):
     monkeypatch.setattr(responses, "send_interaction_feedback", notify)
     assert not await responses.ensure_command_enabled(SimpleNamespace(), "ping")
     assert notify.await_args.kwargs["ephemeral"] is True
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("resolve_original", [False, True])
+async def test_guesssong_start_persists_round_and_holds_slot(
+    command_fixture, resolve_original
+):
+    from backend.firebase_client import MemoryStore
+
+    config, interaction, bot = command_fixture
+    config["games"]["guessSongEnabled"] = True
+    config["games"]["guessSongRoundTimeoutMinutes"] = 5
+    config["games"]["guessSongRounds"] = ["Heather | heather song | A sweater"]
+    bot.store = MemoryStore()
+    bot.settings.guild_id = "123"
+    games.send_action_result.return_value = (
+        None if resolve_original else SimpleNamespace(id=100)
+    )
+    interaction.original_response = AsyncMock(return_value=SimpleNamespace(id=100))
+    await games.make_guesssong_command(bot).callback(interaction)
+    state = await bot.store.get_guessing_game("123", "456", "100")
+    assert state["answer"] == "Heather" and state["attempts"] == 0
+    assert state["aliases"] == ["heather song"]
+    assert len(bot.game_limiter.entries) == 1
+    assert not any(
+        "Heather" in value
+        for _, value, _ in games.send_action_result.await_args.kwargs["fields"]
+    )
+    assert interaction.original_response.await_count == int(resolve_original)
+
+
+@pytest.mark.asyncio
+async def test_guesssong_storage_failure_releases_slot(command_fixture):
+    config, interaction, bot = command_fixture
+    config["games"]["guessSongEnabled"] = True
+    games.send_action_result.return_value = SimpleNamespace(id=100)
+    bot.store = SimpleNamespace(
+        set_guessing_game=AsyncMock(side_effect=RuntimeError("fictional failure"))
+    )
+    bot.settings.guild_id = "123"
+    with pytest.raises(RuntimeError):
+        await games.make_guesssong_command(bot).callback(interaction)
+    assert not bot.game_limiter.entries

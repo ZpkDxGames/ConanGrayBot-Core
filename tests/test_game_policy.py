@@ -157,3 +157,44 @@ def test_guess_completion_releases_only_matching_round():
     limiter.release_game("1", "2", "message-1")
     assert first.token not in limiter.entries
     assert second.token in limiter.entries
+
+
+@pytest.mark.parametrize(
+    "staff,configured,member_role,allowed",
+    [
+        ("456", "999", 999, False),
+        ("456", "999", 456, True),
+        ("", "999", 999, True),
+        ("", "", 999, False),
+    ],
+)
+def test_deployment_staff_role_takes_precedence(
+    staff, configured, member_role, allowed
+):
+    from backend.discord_bot.common import member_has_admin_role
+
+    assert (
+        member_has_admin_role(
+            SimpleNamespace(roles=[SimpleNamespace(id=member_role)]),
+            {"admin": {"roleId": configured}},
+            SimpleNamespace(staff_role_id=staff),
+        )
+        is allowed
+    )
+
+
+@pytest.mark.asyncio
+async def test_stale_tictactoe_view_cannot_play_after_reservation_expiry(monkeypatch):
+    now = [0.0]
+    limiter = GameLimiter(clock=lambda: now[0])
+    lease = limiter.acquire("1", "2", 1)
+    assert lease is not None
+    lease.hold(300)
+    view = games.TicTacToeView(123, config={}, lease=lease)
+    feedback = AsyncMock()
+    monkeypatch.setattr(games, "send_interaction_feedback", feedback)
+    now[0] = 301
+    await view.children[0].callback(SimpleNamespace(user=SimpleNamespace(id=123)))
+    assert view.is_finished() and view.board == [""] * 9
+    assert not limiter.entries
+    feedback.assert_awaited_once()

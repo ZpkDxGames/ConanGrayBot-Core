@@ -488,6 +488,17 @@ class TicTacToeButton(discord.ui.Button):
         async with view.move_lock:
             if view.is_finished():
                 return
+            if view.lease is not None and view.lease.expired():
+                await view.on_timeout()
+                await send_interaction_feedback(
+                    interaction,
+                    view.config,
+                    title="Game expired",
+                    description="Start a new game to play again.",
+                    kind="warning",
+                    ephemeral=True,
+                )
+                return
             await self._apply_move(interaction)
 
     async def _apply_move(self, interaction: discord.Interaction) -> None:

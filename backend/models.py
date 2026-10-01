@@ -166,6 +166,12 @@ class BotConfigAi(StrictModel):
     maxOutputTokens: int = Field(default=260, ge=32, le=4096)
 
 
+class SavedWeatherLocation(StrictModel):
+    query: str = Field(max_length=120)
+    label: str = Field(default="", max_length=180)
+    country: str = Field(default="", max_length=3)
+
+
 class BotConfigWeather(StrictModel):
     enabled: bool = Field(default=True)
     aiDetectionEnabled: bool = Field(default=True)
@@ -175,7 +181,9 @@ class BotConfigWeather(StrictModel):
     forecastHours: int = Field(default=12, ge=1, le=120)
     showDetails: bool = Field(default=True)
     allowUserSavedLocations: bool = Field(default=True)
-    userLocations: dict[str, str] = Field(default_factory=dict)
+    userLocations: dict[str, SavedWeatherLocation | str] = Field(
+        default_factory=dict, max_length=1000
+    )
 
 
 class BotConfigPresentation(StrictModel):

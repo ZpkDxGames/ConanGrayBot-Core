@@ -182,7 +182,6 @@ class OpenWeatherClient:
             ) from exc
 
         if response.status >= 400:
-            message = payload.get("message") if isinstance(payload, dict) else ""
             if response.status == 401:
                 raise WeatherError(
                     "The OpenWeather API key was rejected.",
@@ -196,10 +195,19 @@ class OpenWeatherClient:
                     status=429,
                 )
             raise WeatherError(
-                str(message or "The weather service returned an error."),
+                "The weather service returned an error.",
                 status=response.status,
             )
         return payload
+
+    def _remember_location(self, key: str, location: WeatherLocation) -> None:
+        self._geocode_cache[key] = (time.monotonic(), location)
+        if len(self._geocode_cache) > 256:
+            oldest = sorted(
+                self._geocode_cache, key=lambda item: self._geocode_cache[item][0]
+            )[:64]
+            for item in oldest:
+                self._geocode_cache.pop(item, None)
 
     async def geocode(self, query: str) -> WeatherLocation:
         cleaned = " ".join(str(query or "").split()).strip()
@@ -239,7 +247,7 @@ class OpenWeatherClient:
                 latitude=lat,
                 longitude=lon,
             )
-            self._geocode_cache[cache_key] = (time.monotonic(), location)
+            self._remember_location(cache_key, location)
             return location
 
         zip_match = re.fullmatch(
@@ -265,7 +273,7 @@ class OpenWeatherClient:
                     latitude=float(payload.get("lat") or 0),
                     longitude=float(payload.get("lon") or 0),
                 )
-                self._geocode_cache[cache_key] = (time.monotonic(), location)
+                self._remember_location(cache_key, location)
                 return location
 
         payload = await self._request_json(
@@ -286,13 +294,7 @@ class OpenWeatherClient:
             latitude=float(row.get("lat")),
             longitude=float(row.get("lon")),
         )
-        self._geocode_cache[cache_key] = (time.monotonic(), location)
-        if len(self._geocode_cache) > 256:
-            oldest = sorted(self._geocode_cache.items(), key=lambda item: item[1][0])[
-                :64
-            ]
-            for key, _ in oldest:
-                self._geocode_cache.pop(key, None)
+        self._remember_location(cache_key, location)
         return location
 
     async def get_weather(

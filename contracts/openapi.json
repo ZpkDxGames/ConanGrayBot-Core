@@ -2765,8 +2765,16 @@
           },
           "userLocations": {
             "additionalProperties": {
-              "type": "string"
+              "anyOf": [
+                {
+                  "$ref": "#/components/schemas/SavedWeatherLocation"
+                },
+                {
+                  "type": "string"
+                }
+              ]
             },
+            "maxProperties": 1000,
             "title": "Userlocations",
             "type": "object"
           }
@@ -3666,6 +3674,33 @@
           "latencyMs"
         ],
         "title": "SandboxResult",
+        "type": "object"
+      },
+      "SavedWeatherLocation": {
+        "additionalProperties": false,
+        "properties": {
+          "country": {
+            "default": "",
+            "maxLength": 3,
+            "title": "Country",
+            "type": "string"
+          },
+          "label": {
+            "default": "",
+            "maxLength": 180,
+            "title": "Label",
+            "type": "string"
+          },
+          "query": {
+            "maxLength": 120,
+            "title": "Query",
+            "type": "string"
+          }
+        },
+        "required": [
+          "query"
+        ],
+        "title": "SavedWeatherLocation",
         "type": "object"
       },
       "Trigger": {

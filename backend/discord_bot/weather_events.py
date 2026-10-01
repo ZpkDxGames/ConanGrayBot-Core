@@ -5,6 +5,7 @@ from typing import Any
 import discord
 
 from ..firebase_client import FirestoreStore, MemoryStore
+from ..migrations import RevisionConflict
 from ..weather import (
     WeatherError,
     extract_weather_location,
@@ -52,24 +53,36 @@ class WeatherEventsMixin:
         config: dict[str, Any],
         report: dict[str, Any],
     ) -> dict[str, Any]:
-        weather_config = config.setdefault("weather", {})
-        saved_locations = weather_config.setdefault("userLocations", {})
-        if not isinstance(saved_locations, dict):
-            saved_locations = {}
-            weather_config["userLocations"] = saved_locations
-        location = (
-            (report.get("location") or {})
-            if isinstance(report.get("location"), dict)
-            else {}
-        )
-        latitude = float(location.get("latitude") or 0)
-        longitude = float(location.get("longitude") or 0)
-        saved_locations[str(user_id)] = {
-            "query": f"{latitude:.6f},{longitude:.6f}",
-            "label": str(location.get("label") or ""),
-            "country": str(location.get("country") or ""),
+        location = report.get("location") or {}
+        saved = {
+            "query": f"{float(location.get('latitude') or 0):.6f},{float(location.get('longitude') or 0):.6f}",
+            "label": str(location.get("label") or "")[:180],
+            "country": str(location.get("country") or "")[:3],
         }
-        return await self.store.set_config(str(guild_id), config)
+        # Read fresh state and retry only this user's location; never overwrite
+        # dashboard edits made while the weather provider was answering.
+        for attempt in range(3):
+            current = await self.store.get_config(str(guild_id))
+            locations = current.setdefault("weather", {}).setdefault(
+                "userLocations", {}
+            )
+            if str(user_id) not in locations and len(locations) >= 1000:
+                raise WeatherError(
+                    "Saved-location limit reached.", code="location_limit", status=409
+                )
+            locations[str(user_id)] = saved
+            try:
+                return await self.store.set_config(
+                    str(guild_id), current, expected_revision=current["revision"]
+                )
+            except RevisionConflict:
+                if attempt == 2:
+                    raise WeatherError(
+                        "Configuration changed; retry saving your location.",
+                        code="configuration_conflict",
+                        status=409,
+                    ) from None
+        raise AssertionError("unreachable")
 
     async def _handle_weather_chat(
         self,

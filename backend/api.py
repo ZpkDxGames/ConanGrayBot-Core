@@ -1,5 +1,6 @@
 """Versioned API boundary: body limits, redacted errors and mutation audit."""
 
+import logging
 from contextlib import asynccontextmanager
 from uuid import uuid4
 
@@ -19,7 +20,7 @@ from .management import (
     sandbox,
     stream,
 )
-from .management.auth import require_staff
+from .management.auth import require_mutation_audit, require_staff
 from .migrations import RevisionConflict
 from .providers import manager
 from .version import VERSION
@@ -57,7 +58,12 @@ for router in (
     stream.router,
     sandbox.router,
 ):
-    app.include_router(router)
+    app.include_router(
+        router,
+        dependencies=[]
+        if router is stream.router
+        else [Depends(require_mutation_audit)],
+    )
 
 
 def error(request, status, code, message, fields=None):
@@ -90,16 +96,23 @@ async def boundary(request: Request, call_next):
         and response.status_code < 400
         and hasattr(request.state, "actor_id")
     ):
-        await runtime.store.add_log(
-            runtime.settings.guild_id,
-            "management.mutation",
-            {
-                "actorId": request.state.actor_id,
-                "method": request.method,
-                "path": request.url.path,
-                "requestId": request.state.request_id,
-            },
-        )
+        try:
+            await runtime.store.add_log(
+                runtime.settings.guild_id,
+                "management.mutation",
+                {
+                    "actorId": request.state.actor_id,
+                    "method": request.method,
+                    "path": request.url.path,
+                    "requestId": request.state.request_id,
+                },
+            )
+        except Exception:
+            # The durable intent remains. Preserve the committed operation's
+            # response so a client cannot accidentally repeat it after a 500.
+            logging.getLogger("conan.audit").error(
+                "Mutation outcome audit failed; requestId=%s", request.state.request_id
+            )
     response.headers["X-Request-ID"] = request.state.request_id
     response.headers["Cache-Control"] = "no-store"
     response.headers["X-Content-Type-Options"] = "nosniff"

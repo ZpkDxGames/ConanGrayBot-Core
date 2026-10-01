@@ -1,5 +1,5 @@
 import discord
-from fastapi import Depends, HTTPException
+from fastapi import Depends, HTTPException, Request
 
 from ..http import pooled_session
 from ..security import require_service
@@ -45,3 +45,24 @@ async def require_staff(actor: str = Depends(require_service)) -> str:
     ):
         raise HTTPException(403, "Staff access denied")
     return actor
+
+
+async def require_mutation_audit(
+    request: Request, actor: str = Depends(require_staff)
+) -> None:
+    if request.method not in {"POST", "PUT", "DELETE"}:
+        return
+    try:
+        await runtime.store.add_log(
+            runtime.settings.guild_id,
+            "management.mutation_requested",
+            {
+                "actorId": actor,
+                "method": request.method,
+                "path": request.url.path,
+                "requestId": request.state.request_id,
+            },
+        )
+    except Exception:
+        # No mutation is admitted when its authorization audit cannot be stored.
+        raise HTTPException(503, "Audit service unavailable") from None

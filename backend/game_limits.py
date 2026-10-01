@@ -30,6 +30,10 @@ class GameLease:
     def release(self) -> None:
         self.limiter.entries.pop(self.token, None)
 
+    def expired(self) -> bool:
+        entry = self.limiter.entries.get(self.token)
+        return entry is None or entry[1] <= self.limiter.clock()
+
 
 class GameLimiter:
     def __init__(

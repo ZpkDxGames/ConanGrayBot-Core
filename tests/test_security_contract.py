@@ -283,3 +283,69 @@ def test_redaction(settings):
         )
         == "[REDACTED]"
     )
+
+
+def test_audit_intent_failure_blocks_configuration_mutation(
+    client, settings, monkeypatch
+):
+    import json
+    from unittest.mock import AsyncMock
+
+    from backend.management import runtime
+
+    before = client.get(
+        "/api/v1/config/123", headers=signed(settings, "GET", "/api/v1/config/123")
+    ).json()["config"]
+    updated = copy.deepcopy(before)
+    updated["presence"]["activityText"] = "Must not commit"
+    body = json.dumps({"revision": before["revision"], "config": updated}).encode()
+    monkeypatch.setattr(
+        runtime.store,
+        "add_log",
+        AsyncMock(side_effect=RuntimeError("fictional confidential body")),
+    )
+    response = client.put(
+        "/api/v1/config/123",
+        content=body,
+        headers=signed(settings, "PUT", "/api/v1/config/123", body),
+    )
+    assert response.status_code == 503
+    assert "confidential" not in response.text
+    assert response.headers["cache-control"] == "no-store"
+    after = client.get(
+        "/api/v1/config/123", headers=signed(settings, "GET", "/api/v1/config/123")
+    ).json()["config"]
+    assert after == before
+
+
+def test_outcome_audit_failure_preserves_committed_result(
+    client, settings, monkeypatch
+):
+    import json
+
+    from backend.management import runtime
+
+    before = client.get(
+        "/api/v1/config/123", headers=signed(settings, "GET", "/api/v1/config/123")
+    ).json()["config"]
+    updated = copy.deepcopy(before)
+    updated["presence"]["activityText"] = "Committed fixture"
+    body = json.dumps({"revision": before["revision"], "config": updated}).encode()
+    original = runtime.store.add_log
+
+    async def audit(guild, event, payload):
+        if event == "management.mutation":
+            raise RuntimeError("fictional confidential body")
+        await original(guild, event, payload)
+
+    monkeypatch.setattr(runtime.store, "add_log", audit)
+    response = client.put(
+        "/api/v1/config/123",
+        content=body,
+        headers=signed(settings, "PUT", "/api/v1/config/123", body),
+    )
+    assert response.status_code == 200
+    assert response.json()["config"]["presence"]["activityText"] == "Committed fixture"
+    assert response.headers["x-request-id"]
+    logs = asyncio.run(runtime.store.list_logs("123"))
+    assert any(row["event"] == "management.mutation_requested" for row in logs)

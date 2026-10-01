@@ -208,3 +208,17 @@ def test_assembled_prompt_budget_includes_system_instructions():
     assert sum(len(row["content"]) for row in result) <= 4000
     assert result[-1]["content"] == "latest message"
     assert len(result) == 2
+
+
+def test_final_prompt_honors_smallest_configured_budget():
+    from backend.prompts import bounded_messages
+
+    result = bounded_messages(
+        [
+            {"role": "system", "content": "s" * 5000},
+            {"role": "user", "content": "u" * 4000},
+        ],
+        1000,
+    )
+    assert sum(len(row["content"]) for row in result) == 1000
+    assert result[-1]["role"] == "user"

@@ -158,8 +158,8 @@ async def send_random_trigger_media(
         stream_url = build_drive_stream_url(file_id, file_name)
         if not stream_url:
             raise ValueError(
-                "Large-media streaming is not configured. Set PUBLIC_BASE_URL and keep a dashboard, "
-                "Discord, or MEDIA_STREAM_SIGNING_KEY secret configured."
+                "Large-media streaming is not configured. Set PUBLIC_BASE_URL and an independent "
+                "MEDIA_STREAM_SIGNING_KEY."
             )
         size_text = format_file_size(size_value)
         template_context["size"] = size_text
@@ -312,15 +312,13 @@ async def send_random_trigger_media(
             "fileId": file_id,
             "fileName": file_name,
         }
-    except Exception as exc:
+    except Exception:
         log.exception("Could not download/send random trigger media")
         await send_message_feedback(
             message,
             config,
             title="Could not send the random media",
-            description=str(exc)
-            if isinstance(exc, ValueError)
-            else "The selected file could not be downloaded or attached to Discord.",
+            description="The selected file could not be downloaded or attached to Discord.",
             kind="error",
             template_key="trigger",
             fields=fields,
