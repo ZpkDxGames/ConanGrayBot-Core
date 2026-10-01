@@ -177,15 +177,6 @@ def normalize_drive_error(
             project_id=effective_project,
             raw_message=message,
         )
-    if normalized in {"insufficientpermissions", "forbidden"} or status == 403:
-        return DriveConfigurationError(
-            "The authenticated Drive identity cannot access this folder. Share the folder with that identity and try again.",
-            code="folder_permission_denied",
-            reason=reason or "forbidden",
-            status=403,
-            project_id=effective_project,
-            raw_message=message,
-        )
     if normalized == "storagequotaexceeded" or "storage quota" in lower_message:
         message_text = (
             "The Google user account has no available Drive storage."
@@ -213,8 +204,17 @@ def normalize_drive_error(
             project_id=effective_project,
             raw_message=message,
         )
+    if normalized in {"insufficientpermissions", "forbidden"} or status == 403:
+        return DriveConfigurationError(
+            "The authenticated Drive identity cannot access this folder. Share the folder with that identity and try again.",
+            code="folder_permission_denied",
+            reason=reason or "forbidden",
+            status=403,
+            project_id=effective_project,
+            raw_message=message,
+        )
     return DriveConfigurationError(
-        f"Google Drive request failed: {message}",
+        "Google Drive request failed. Check provider status and project permissions.",
         code="drive_request_failed",
         reason=reason,
         status=status if 400 <= status <= 599 else 502,
@@ -291,6 +291,7 @@ class GoogleDriveArchive:
 
     def __init__(self) -> None:
         self.settings = get_settings()
+        self._operation_lock = asyncio.Lock()
         requested_mode = self.settings.google_drive_auth_mode or "service_account"
         self.auth_mode = (
             requested_mode if requested_mode in self.AUTH_MODES else "service_account"
@@ -364,6 +365,10 @@ class GoogleDriveArchive:
                 self.expected_project_id,
                 self.credential_project_id,
             )
+
+    async def _execute(self, call, *args, **kwargs):
+        async with self._operation_lock:
+            return await run_blocking(call, *args, **kwargs)
 
     @property
     def _oauth_complete(self) -> bool:
@@ -511,7 +516,7 @@ class GoogleDriveArchive:
 
         async with self._credentials_lock:
             if self._credentials is None:
-                self._credentials = await run_blocking(self._build_credentials_sync)
+                self._credentials = await self._execute(self._build_credentials_sync)
             return self._credentials
 
     async def _get_service(self) -> Any:
@@ -530,7 +535,7 @@ class GoogleDriveArchive:
                     "drive", "v3", credentials=credentials, cache_discovery=False
                 )
 
-            self._service = await run_blocking(build_service)
+            self._service = await self._execute(build_service)
             return self._service
 
     async def test_folder(self, folder_id_or_url: str) -> dict[str, Any]:
@@ -573,7 +578,7 @@ class GoogleDriveArchive:
             }
 
         try:
-            result = await run_blocking(work)
+            result = await self._execute(work)
             if result.get("authenticatedUserEmail"):
                 self.principal_email = str(result["authenticatedUserEmail"])
             return result
@@ -636,7 +641,7 @@ class GoogleDriveArchive:
             return rows
 
         try:
-            return await run_blocking(work)
+            return await self._execute(work)
         except DriveConfigurationError:
             raise
         except Exception as exc:
@@ -682,7 +687,7 @@ class GoogleDriveArchive:
             return path
 
         try:
-            return await run_blocking(work)
+            return await self._execute(work)
         except DriveConfigurationError:
             raise
         except Exception as exc:
@@ -712,7 +717,7 @@ class GoogleDriveArchive:
             )
 
         try:
-            return await run_blocking(work)
+            return await self._execute(work)
         except DriveConfigurationError:
             raise
         except Exception as exc:
@@ -746,20 +751,24 @@ class GoogleDriveArchive:
 
             session = AuthorizedSession(credentials)
             headers = {"Range": normalized_range} if normalized_range else {}
-            response = session.get(
-                f"https://www.googleapis.com/drive/v3/files/{file_id}",
-                params={"alt": "media", "supportsAllDrives": "true"},
-                headers=headers,
-                stream=True,
-                timeout=(15, 300),
-            )
+            try:
+                response = session.get(
+                    f"https://www.googleapis.com/drive/v3/files/{file_id}",
+                    params={"alt": "media", "supportsAllDrives": "true"},
+                    headers=headers,
+                    stream=True,
+                    timeout=(15, 300),
+                )
+            except Exception:
+                session.close()
+                raise
             if response.status_code >= 400:
                 status = response.status_code
                 detail = response.text[:2000]
                 response.close()
                 session.close()
                 raise DriveConfigurationError(
-                    f"Google Drive media stream failed with HTTP {status}: {detail}",
+                    f"Google Drive media stream failed with HTTP {status}",
                     code="drive_stream_failed",
                     reason="streamRequestFailed",
                     status=status if 400 <= status <= 599 else 502,
@@ -768,7 +777,7 @@ class GoogleDriveArchive:
                 )
             return session, response
 
-        return await run_blocking(work)
+        return await self._execute(work)
 
     async def upload_file(
         self,
@@ -814,12 +823,23 @@ class GoogleDriveArchive:
                 .execute()
             )
             if make_public:
-                service.permissions().create(
-                    fileId=created["id"],
-                    body={"type": "anyone", "role": "reader"},
-                    supportsAllDrives=True,
-                    fields="id",
-                ).execute()
+                try:
+                    service.permissions().create(
+                        fileId=created["id"],
+                        body={"type": "anyone", "role": "reader"},
+                        supportsAllDrives=True,
+                        fields="id",
+                    ).execute()
+                except Exception:
+                    try:
+                        service.files().delete(
+                            fileId=created["id"], supportsAllDrives=True
+                        ).execute()
+                    except Exception:
+                        log.error(
+                            "Public-permission compensation failed; operator reconciliation required"
+                        )
+                    raise
             created["public"] = bool(make_public)
             if make_public:
                 created["publicContentUrl"] = (
@@ -831,7 +851,7 @@ class GoogleDriveArchive:
             return created
 
         try:
-            return await run_blocking(work)
+            return await self._execute(work)
         except DriveConfigurationError:
             raise
         except Exception as exc:
@@ -852,7 +872,7 @@ class GoogleDriveArchive:
             service.files().delete(fileId=file_id, supportsAllDrives=True).execute()
 
         try:
-            await run_blocking(work)
+            await self._execute(work)
         except DriveConfigurationError:
             raise
         except Exception as exc:

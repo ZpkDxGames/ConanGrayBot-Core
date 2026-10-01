@@ -316,7 +316,7 @@ def build_feedback_embed(
         field_rows = []
 
     embed = discord.Embed(
-        title=rendered["title"] or None,
+        title=rendered["title"][:256] or None,
         description=final_description[:4096] or None,
         color=rendered["color"],
         timestamp=datetime.now(timezone.utc) if rendered["showTimestamp"] else None,
@@ -337,7 +337,31 @@ def build_feedback_embed(
     if image_url:
         embed.set_image(url=str(image_url))
     if rendered["footer"]:
-        embed.set_footer(text=rendered["footer"])
+        embed.set_footer(text=rendered["footer"][:2048])
+    if embed.author.name:
+        embed.set_author(
+            name=embed.author.name[:256], icon_url=embed.author.icon_url or None
+        )
+    # Discord limits all embed text together to 6000 characters and 25 fields.
+    budget = max(
+        0,
+        6000
+        - len(embed.title or "")
+        - len(embed.footer.text or "")
+        - len(embed.author.name or ""),
+    )
+    embed.description = (embed.description or "")[:budget] or None
+    budget -= len(embed.description or "")
+    original_fields = list(embed.fields)
+    embed.clear_fields()
+    for field in original_fields[:25]:
+        name = (field.name or "")[: min(256, max(0, budget - 1))]
+        budget -= len(name)
+        value = (field.value or "")[: min(1024, budget)]
+        if not name or not value:
+            break
+        embed.add_field(name=name, value=value, inline=field.inline)
+        budget -= len(value)
     return embed
 
 

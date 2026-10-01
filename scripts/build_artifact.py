@@ -8,7 +8,7 @@ from pathlib import Path
 
 paths = [
     p
-    for root in ["backend", "scripts", "contracts", "tests"]
+    for root in ["backend", "scripts", "contracts", "tests", "release"]
     for p in Path(root).rglob("*")
     if p.is_file() and "__pycache__" not in p.parts and p.suffix in {".py", ".json"}
 ]

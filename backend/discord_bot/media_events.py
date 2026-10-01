@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import os
 import re
 import tempfile
@@ -13,6 +14,7 @@ from ..firebase_client import FirestoreStore, MemoryStore
 from ..presentation import (
     send_message_feedback,
 )
+from ..state import TTLRegistry
 from .common import (
     attachment_media_type,
     discord_profile_name,
@@ -24,11 +26,20 @@ from .responses import send_trigger
 
 class MediaEventsMixin:
     _config_for: Any
+    media_archive_locks: TTLRegistry[asyncio.Lock]
     drive_archive: Any
     settings: Settings
     store: MemoryStore | FirestoreStore
 
     async def _handle_media_archive(self, message: discord.Message) -> None:
+        if message.guild is None:
+            return
+        key = f"{message.guild.id}:{message.channel.id}"
+        lock = self.media_archive_locks.setdefault(key, asyncio.Lock())
+        async with lock:
+            await self._archive_media_message(message)
+
+    async def _archive_media_message(self, message: discord.Message) -> None:
         if message.guild is None:
             return
         attachments = list(getattr(message, "attachments", None) or [])
@@ -84,7 +95,7 @@ class MediaEventsMixin:
             return
 
         max_bytes = (
-            max(1, min(int(media_config.get("maxFileSizeMb") or 100), 2048))
+            max(1, min(int(media_config.get("maxFileSizeMb") or 100), 256))
             * 1024
             * 1024
         )
@@ -94,6 +105,9 @@ class MediaEventsMixin:
         profile_name = discord_profile_name(message.author)
 
         for attachment in attachments:
+            record_id = f"{message.id}-{attachment.id}"
+            if await self.store.get_media_record(guild_id, record_id):
+                continue
             media_type, mime_type = attachment_media_type(attachment)
             if media_type == "image" and not media_config.get("uploadImages", True):
                 continue
@@ -117,6 +131,8 @@ class MediaEventsMixin:
                 )
                 continue
 
+            drive_file = None
+            record_saved = False
             temp_path = ""
             try:
                 suffix = Path(str(getattr(attachment, "filename", "") or "")).suffix
@@ -124,7 +140,11 @@ class MediaEventsMixin:
                     prefix="conan-media-", suffix=suffix, delete=False
                 ) as temporary:
                     temp_path = temporary.name
-                await attachment.save(temp_path, use_cached=True)
+                await asyncio.wait_for(
+                    attachment.save(temp_path, use_cached=True), timeout=30
+                )
+                if Path(temp_path).stat().st_size > max_bytes:
+                    raise ValueError("Downloaded attachment exceeds configured limit")
                 drive_name = render_media_filename(
                     str(
                         media_config.get("fileNameTemplate")
@@ -149,6 +169,7 @@ class MediaEventsMixin:
                 record = await self.store.add_media_record(
                     guild_id,
                     {
+                        "recordId": record_id,
                         "driveFileId": str(drive_file.get("id") or ""),
                         "name": str(drive_file.get("name") or drive_name),
                         "originalName": str(
@@ -175,6 +196,7 @@ class MediaEventsMixin:
                         "public": bool(drive_file.get("public", False)),
                     },
                 )
+                record_saved = True
                 uploaded += 1
                 await self.store.add_log(
                     guild_id,
@@ -188,6 +210,13 @@ class MediaEventsMixin:
                     },
                 )
             except Exception as exc:
+                if drive_file and drive_file.get("id") and not record_saved:
+                    try:
+                        await self.drive_archive.delete_file(str(drive_file["id"]))
+                    except Exception:
+                        log.error(
+                            "Drive archive compensation failed; operator reconciliation required"
+                        )
                 failed += 1
                 log.exception("Could not archive Discord attachment to Google Drive")
                 await self.store.add_log(
@@ -196,7 +225,7 @@ class MediaEventsMixin:
                     {
                         "filename": str(getattr(attachment, "filename", "media")),
                         "messageId": str(message.id),
-                        "error": f"{type(exc).__name__}: {exc}",
+                        "error": type(exc).__name__,
                     },
                 )
             finally:

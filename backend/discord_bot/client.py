@@ -52,6 +52,7 @@ class ConanBot(
         self.command_sync_status = "pending"
         self.command_sync_error: str | None = None
         self.registered_command_names: list[str] = []
+        self.media_archive_locks: TTLRegistry[asyncio.Lock] = TTLRegistry(1024, 3600)
         self.ai_cooldowns: TTLRegistry[float] = TTLRegistry(1024, 86400)
         self.ai_session_locks: TTLRegistry[asyncio.Lock] = TTLRegistry(1024, 3600)
         self.guessing_game_locks: TTLRegistry[asyncio.Lock] = TTLRegistry(1024, 3600)

@@ -24,6 +24,7 @@ jobs:
   quality:
     runs-on: ubuntu-latest
     strategy:
+      fail-fast: false
       matrix:
         python: ['3.11', '3.12']
     steps:
@@ -37,7 +38,6 @@ jobs:
       - run: ruff check backend tests scripts && ruff format --check backend tests scripts
       - run: mypy backend
       - run: python -m pytest --cov=backend --cov-report=json
-      - run: python scripts/check_coverage.py
       - run: pip-audit -r requirements.lock
       - run: PYTHONPATH=. python scripts/export_contract.py && git diff --exit-code -- contracts
       - run: python scripts/build_artifact.py && python scripts/scan_artifact.py
@@ -46,3 +46,4 @@ jobs:
           name: core-source-python-${{ matrix.python }}
           path: dist/*
           if-no-files-found: error
+      - run: python scripts/check_coverage.py
