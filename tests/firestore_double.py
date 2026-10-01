@@ -4,6 +4,7 @@ import copy
 import threading
 from datetime import datetime, timezone
 from functools import wraps
+from types import SimpleNamespace
 from uuid import uuid4
 
 from firebase_admin import firestore
@@ -50,7 +51,7 @@ class Document:
 
 class Query:
     def __init__(self, client, path, filters=(), ordering=(), count=None, cursor=None):
-        self.client, self.path, self.filters, self.ordering, self.count, self.cursor = (
+        self.client, self.path, self.filters, self.ordering, self.limit_count, self.cursor = (
             client,
             path,
             filters,
@@ -77,7 +78,7 @@ class Query:
             self.path,
             self.filters + ((field, value),),
             self.ordering,
-            self.count,
+            self.limit_count,
             self.cursor,
         )
 
@@ -87,7 +88,7 @@ class Query:
             self.path,
             self.filters,
             self.ordering + ((field, direction),),
-            self.count,
+            self.limit_count,
             self.cursor,
         )
 
@@ -98,8 +99,14 @@ class Query:
 
     def start_after(self, snapshot):
         return Query(
-            self.client, self.path, self.filters, self.ordering, self.count, snapshot.id
+            self.client, self.path, self.filters, self.ordering, self.limit_count, snapshot.id
         )
+
+    def count(self, alias=None):
+        return Aggregate(self, "count", None, alias)
+
+    def sum(self, field, alias=None):
+        return Aggregate(self, "sum", field, alias)
 
     def stream(self):
         paths = [
@@ -121,9 +128,25 @@ class Query:
         if self.cursor is not None:
             ids = [p.rsplit("/", 1)[-1] for p in paths]
             paths = paths[ids.index(self.cursor) + 1 :]
-        if self.count is not None:
-            paths = paths[: self.count]
+        if self.limit_count is not None:
+            paths = paths[: self.limit_count]
         return iter(Snapshot(Document(self.client, p)) for p in paths)
+
+
+class Aggregate:
+    def __init__(self, query, operation, field, alias):
+        self.query = query
+        self.operation = operation
+        self.field = field
+        self.alias = alias
+
+    def get(self):
+        rows = [snapshot.to_dict() for snapshot in self.query.stream()]
+        if self.operation == "count":
+            value = len(rows)
+        else:
+            value = sum(row.get(self.field, 0) for row in rows)
+        return [[SimpleNamespace(alias=self.alias, value=value)]]
 
 
 class Batch:

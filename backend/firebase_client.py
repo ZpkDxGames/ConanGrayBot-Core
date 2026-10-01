@@ -243,7 +243,7 @@ class MemoryStore:
         rows = [
             row
             for key, row in self._sessions.items()
-            if key.startswith(prefix) and row.get("messages")
+            if key.startswith(prefix) and row.get("messages") and not expired(row)
         ]
         channels = {
             str(row.get("channelId") or "") for row in rows if row.get("channelId")
@@ -722,7 +722,7 @@ class FirestoreStore:
             for doc in self._sessions_collection(guild_id).stream():
                 data = doc.to_dict() or {}
                 stored = data.get("messages") or []
-                if not stored:
+                if expired(data) or not stored:
                     continue
                 channel_id = str(data.get("channelId") or "")
                 if not channel_id and "--" not in doc.id:
@@ -937,18 +937,29 @@ class FirestoreStore:
 
     async def media_stats(self, guild_id: str) -> dict[str, int]:
         def work() -> dict[str, int]:
-            files = images = videos = total_bytes = 0
-            for doc in self._media_collection(guild_id).stream():
-                data = doc.to_dict() or {}
-                files += 1
-                images += int(data.get("mediaType") == "image")
-                videos += int(data.get("mediaType") == "video")
-                total_bytes += int(data.get("size") or 0)
+            from google.cloud.firestore_v1.base_query import FieldFilter
+
+            collection = self._media_collection(guild_id)
+
+            def value(query: Any) -> int:
+                results = query.get()
+                return max(0, int(results[0][0].value or 0)) if results else 0
+
+            # Independent counts preserve records missing legacy size fields;
+            # SUM excludes missing fields. No archive documents are downloaded.
             return {
-                "files": files,
-                "images": images,
-                "videos": videos,
-                "bytes": total_bytes,
+                "files": value(collection.count(alias="files")),
+                "images": value(
+                    collection.where(
+                        filter=FieldFilter("mediaType", "==", "image")
+                    ).count(alias="images")
+                ),
+                "videos": value(
+                    collection.where(
+                        filter=FieldFilter("mediaType", "==", "video")
+                    ).count(alias="videos")
+                ),
+                "bytes": value(collection.sum("size", alias="bytes")),
             }
 
         return await run_blocking(work)

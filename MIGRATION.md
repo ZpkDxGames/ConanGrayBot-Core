@@ -27,3 +27,11 @@ Media and logs return `{guildId, items, nextCursor}` with limits 1–100. Preser
 Command manifest hashes live separately in `command_manifests/{scope}`. Only successful Discord synchronization persists a hash. Startup skips an unchanged manifest; explicit dashboard publication forces synchronization. Configuration saves do not silently publish command changes.
 
 The isolated provider sandbox uses saved configuration and neither reads nor writes conversation memory. Media preview URLs expire and bypass public image optimization caches; refreshing the record page renews them.
+
+## Offline dry-run and immutable private backup
+
+Export the guild configuration privately using authorized management access. The tool accepts a plain configuration object or `{guildId, config}` envelope. Run `python scripts/migrate_config.py /private/path/config.json` for a read-only dry-run. To prepare files, run `python scripts/migrate_config.py /private/path/config.json --apply --backup /private/path/original.json --output /private/path/schema4.json`. Destinations must be new and distinct, outside the repository or under ignored `private/` or `secrets/`. Files are published atomically with mode 0600; existing backups are never overwritten. Validation failures print no configuration values. Review the private migrated snapshot, then apply through the revision-checked management API only after deployment gates pass. Keep the original backup for rollback; do not copy it into a release artifact.
+
+Saved weather locations accept bounded structured records and legacy strings. Saving a location updates fresh configuration with revision checks; it preserves dashboard edits made during provider requests. Deployment staff-role configuration takes precedence over guild admin-role configuration. Media statistics use native count/sum aggregations rather than downloading every archive document; provision Firestore single-field indexes on mediaType and size. Session statistics exclude expired content.
+
+Management mutations persist an authorization intent before executing. An unavailable audit store blocks the operation with 503. If only the completion audit fails, Core records an operational error and preserves the successful committed response, avoiding accidental repeat mutations.

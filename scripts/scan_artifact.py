@@ -3,10 +3,15 @@
 import hashlib
 import json
 import re
+import sys
 import zipfile
 from pathlib import Path
 
-path = Path("dist/ConanGrayBot-Core-v2.0.0-source.zip")
+path = (
+    Path(sys.argv[1])
+    if len(sys.argv) > 1
+    else Path("dist/ConanGrayBot-Core-v2.0.0-source.zip")
+)
 with zipfile.ZipFile(path) as archive:
     manifest = json.loads(archive.read("BUILD_MANIFEST.json"))
     assert set(archive.namelist()) == set(manifest["files"]) | {"BUILD_MANIFEST.json"}

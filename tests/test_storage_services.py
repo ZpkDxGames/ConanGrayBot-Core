@@ -162,3 +162,43 @@ async def test_firestore_native_ttl_suppresses_reads(monkeypatch):
     assert not (await store.get_branch_session("123", "456", "b"))["messages"]
     assert await store.resolve_reply_branch("123", "456", "message") is None
     assert await store.get_active_branch("123", "456") is None
+
+
+@pytest.mark.asyncio
+async def test_session_statistics_suppress_expired_content(store):
+    await store.set_branch_session(
+        "123", "456", "branch", [{"role": "user", "content": "Expired fixture"}]
+    )
+    old = datetime.now(timezone.utc) - timedelta(days=2)
+    if isinstance(store, MemoryStore):
+        for row in store._sessions.values():
+            row["expiresAt"] = old.isoformat()
+    else:
+        for path, row in store.client.docs.items():
+            if "/ai_sessions/" in path:
+                row["expiresAt"] = old
+    assert await store.session_stats("123") == {"channels": 0, "messages": 0}
+
+
+@pytest.mark.asyncio
+async def test_native_media_statistics_use_aggregations_without_stream(monkeypatch):
+    from types import SimpleNamespace
+    from unittest.mock import MagicMock
+
+    store = FirestoreStore(object())
+    query = MagicMock()
+    query.count.return_value.get.return_value = [[SimpleNamespace(value=3)]]
+    query.where.return_value.count.return_value.get.side_effect = [
+        [[SimpleNamespace(value=2)]],
+        [[SimpleNamespace(value=1)]],
+    ]
+    query.sum.return_value.get.return_value = [[SimpleNamespace(value=100)]]
+    monkeypatch.setattr(store, "_media_collection", lambda guild: query)
+    assert await store.media_stats("123") == {
+        "files": 3,
+        "images": 2,
+        "videos": 1,
+        "bytes": 100,
+    }
+    query.stream.assert_not_called()
+    query.sum.assert_called_once_with("size", alias="bytes")
