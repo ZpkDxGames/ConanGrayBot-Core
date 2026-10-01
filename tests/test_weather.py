@@ -3,7 +3,6 @@ from __future__ import annotations
 import unittest
 
 from backend import bot as bot_module
-from backend.config import DEFAULT_BOT_CONFIG
 from backend.firebase_client import merge_bot_config
 from backend.weather import (
     OpenWeatherClient,
@@ -23,9 +22,16 @@ class WeatherIntentTests(unittest.TestCase):
         self.assertFalse(is_weather_question("this game is kind of dramatic"))
 
     def test_explicit_location_extraction(self):
-        self.assertEqual(extract_weather_location("what's the weather in Uberaba, MG, BR?"), "Uberaba, MG, BR")
-        self.assertEqual(extract_weather_location("is it raining in London today?"), "London")
-        self.assertEqual(extract_weather_location("forecast for Tokyo tomorrow"), "Tokyo")
+        self.assertEqual(
+            extract_weather_location("what's the weather in Uberaba, MG, BR?"),
+            "Uberaba, MG, BR",
+        )
+        self.assertEqual(
+            extract_weather_location("is it raining in London today?"), "London"
+        )
+        self.assertEqual(
+            extract_weather_location("forecast for Tokyo tomorrow"), "Tokyo"
+        )
         self.assertEqual(extract_weather_location("what's the weather here?"), "")
 
     def test_unit_selection(self):
@@ -37,16 +43,20 @@ class WeatherIntentTests(unittest.TestCase):
 
 class WeatherReportTests(unittest.TestCase):
     def setUp(self):
-        self.location = type("Location", (), {
-            "as_dict": lambda self: {
-                "name": "Uberaba",
-                "state": "Minas Gerais",
-                "country": "BR",
-                "latitude": -19.75,
-                "longitude": -47.93,
-                "label": "Uberaba, Minas Gerais, BR",
-            }
-        })()
+        self.location = type(
+            "Location",
+            (),
+            {
+                "as_dict": lambda self: {
+                    "name": "Uberaba",
+                    "state": "Minas Gerais",
+                    "country": "BR",
+                    "latitude": -19.75,
+                    "longitude": -47.93,
+                    "label": "Uberaba, Minas Gerais, BR",
+                }
+            },
+        )()
         self.current = {
             "dt": 1_800_000_000,
             "timezone": -10800,
@@ -93,7 +103,9 @@ class WeatherReportTests(unittest.TestCase):
         self.assertEqual(report["location"]["label"], "Uberaba, Minas Gerais, BR")
         self.assertEqual(round(report["current"]["temperature"]), 23)
         self.assertEqual(report["current"]["description"], "broken clouds")
-        self.assertEqual(round(report["forecast"]["precipitationProbability"] * 100), 65)
+        self.assertEqual(
+            round(report["forecast"]["precipitationProbability"] * 100), 65
+        )
         self.assertEqual(report["temperatureLabel"], "°C")
 
         reply = natural_weather_reply(report)
@@ -102,7 +114,9 @@ class WeatherReportTests(unittest.TestCase):
         self.assertIn("65%", reply)
 
         fields = weather_fields(report)
-        self.assertTrue(any(name == "Rain chance" and value == "65%" for name, value, _ in fields))
+        self.assertTrue(
+            any(name == "Rain chance" and value == "65%" for name, value, _ in fields)
+        )
 
 
 class WeatherConfigurationTests(unittest.TestCase):
@@ -115,14 +129,19 @@ class WeatherConfigurationTests(unittest.TestCase):
         self.assertTrue(config["commands"]["weather"])
 
     def test_location_priority_is_explicit_saved_then_guild_default(self):
-        config = merge_bot_config({
-            "weather": {
-                "defaultLocation": "Paris, FR",
-                "userLocations": {
-                    "42": {"query": "-19.750000,-47.930000", "label": "Uberaba, BR"},
-                },
+        config = merge_bot_config(
+            {
+                "weather": {
+                    "defaultLocation": "Paris, FR",
+                    "userLocations": {
+                        "42": {
+                            "query": "-19.750000,-47.930000",
+                            "label": "Uberaba, BR",
+                        },
+                    },
+                }
             }
-        })
+        )
         self.assertEqual(
             bot_module.ConanBot._weather_location_for_user(config, 42, "Tokyo, JP"),
             ("Tokyo, JP", "explicit"),
@@ -137,15 +156,22 @@ class WeatherConfigurationTests(unittest.TestCase):
         )
 
     def test_command_catalog_contains_weather(self):
-        entry = next(row for row in bot_module.COMMAND_CATALOG if row["key"] == "weather")
+        entry = next(
+            row for row in bot_module.COMMAND_CATALOG if row["key"] == "weather"
+        )
         self.assertEqual(entry["name"], "weather")
         self.assertEqual(entry["category"], "Utility")
         self.assertIn("forecast", entry["description"].lower())
 
     def test_workspace_has_openweather_key_setting(self):
-        # This validates configuration wiring without printing or exposing the secret.
-        from backend.config import get_settings
-        self.assertTrue(bool(get_settings().openweather_api_key))
+        from unittest.mock import patch
+
+        from backend.config import Settings
+
+        with patch.dict(
+            "os.environ", {"OPENWEATHER_API_KEY": "isolated-weather-fixture"}
+        ):
+            self.assertEqual(Settings().openweather_api_key, "isolated-weather-fixture")
 
 
 if __name__ == "__main__":

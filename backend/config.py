@@ -1,11 +1,11 @@
 from __future__ import annotations
 
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from functools import lru_cache
+from typing import Any
 
 from dotenv import load_dotenv
-
 
 load_dotenv()
 
@@ -23,66 +23,169 @@ def _bool_env(name: str, default: bool = False) -> bool:
     return raw.strip().lower() in {"1", "true", "yes", "y", "on"}
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, repr=False)
 class Settings:
     app_name: str = "Conan Gray Bot"
-    environment: str = os.getenv("ENVIRONMENT", "development")
+    environment: str = field(
+        default_factory=lambda: os.getenv("ENVIRONMENT", "development")
+    )
 
-    discord_token: str = os.getenv("DISCORD_BOT_TOKEN", "")
-    discord_application_id: str = os.getenv("DISCORD_APPLICATION_ID", "")
-    discord_public_key: str = os.getenv("DISCORD_PUBLIC_KEY", "")
-    guild_id: str = os.getenv("DISCORD_GUILD_ID", "")
-    staff_role_id: str = os.getenv("DISCORD_STAFF_ROLE_ID") or "1514041404836282460"
-    enable_message_content_intent: bool = _bool_env("ENABLE_MESSAGE_CONTENT_INTENT", False)
-    enable_members_intent: bool = _bool_env("ENABLE_MEMBERS_INTENT", False)
+    discord_token: str = field(
+        default_factory=lambda: os.getenv("DISCORD_BOT_TOKEN", "")
+    )
+    discord_application_id: str = field(
+        default_factory=lambda: os.getenv("DISCORD_APPLICATION_ID", "")
+    )
+    discord_public_key: str = field(
+        default_factory=lambda: os.getenv("DISCORD_PUBLIC_KEY", "")
+    )
+    guild_id: str = field(default_factory=lambda: os.getenv("DISCORD_GUILD_ID", ""))
+    staff_role_id: str = field(
+        default_factory=lambda: os.getenv("DISCORD_STAFF_ROLE_ID") or ""
+    )
+    enable_message_content_intent: bool = field(
+        default_factory=lambda: _bool_env("ENABLE_MESSAGE_CONTENT_INTENT", False)
+    )
+    enable_members_intent: bool = field(
+        default_factory=lambda: _bool_env("ENABLE_MEMBERS_INTENT", False)
+    )
 
-    ai_channel_id: str = os.getenv("AI_CHANNEL_ID", "")
-    allowed_category_id: str = os.getenv("ALLOWED_CATEGORY_ID", "")
+    ai_channel_id: str = field(default_factory=lambda: os.getenv("AI_CHANNEL_ID", ""))
+    allowed_category_id: str = field(
+        default_factory=lambda: os.getenv("ALLOWED_CATEGORY_ID", "")
+    )
 
-    dashboard_key: str = os.getenv("DASHBOARD_SESSION_KEY", "")
-    public_base_url: str = os.getenv("PUBLIC_BASE_URL", "https://conanbot.discloud.app")
-    media_stream_signing_key: str = os.getenv("MEDIA_STREAM_SIGNING_KEY", "")
+    core_service_token: str = field(
+        default_factory=lambda: os.getenv("CORE_SERVICE_TOKEN", "")
+    )
+    media_stream_ttl_seconds: int = field(
+        default_factory=lambda: int(os.getenv("MEDIA_STREAM_TTL_SECONDS", "900"))
+    )
+    memory_retention_days: int = field(
+        default_factory=lambda: int(os.getenv("MEMORY_RETENTION_DAYS", "30"))
+    )
+    openrouter_discovery_enabled: bool = field(
+        default_factory=lambda: _bool_env("OPENROUTER_DISCOVERY_ENABLED", False)
+    )
+    public_base_url: str = field(
+        default_factory=lambda: os.getenv(
+            "PUBLIC_BASE_URL", "https://conanbot.discloud.app"
+        )
+    )
+    media_stream_signing_key: str = field(
+        default_factory=lambda: os.getenv("MEDIA_STREAM_SIGNING_KEY", "")
+    )
     cors_origins: list[str] = None  # type: ignore[assignment]
 
-    firebase_project_id: str = os.getenv("FIREBASE_PROJECT_ID", "")
-    firebase_service_account_path: str = os.getenv("FIREBASE_SERVICE_ACCOUNT_PATH", "")
-    firebase_service_account_json: str = os.getenv("FIREBASE_SERVICE_ACCOUNT_JSON", "")
+    firebase_project_id: str = field(
+        default_factory=lambda: os.getenv("FIREBASE_PROJECT_ID", "")
+    )
+    firebase_service_account_path: str = field(
+        default_factory=lambda: os.getenv("FIREBASE_SERVICE_ACCOUNT_PATH", "")
+    )
+    firebase_service_account_json: str = field(
+        default_factory=lambda: os.getenv("FIREBASE_SERVICE_ACCOUNT_JSON", "")
+    )
 
-    google_drive_service_account_path: str = os.getenv("GOOGLE_DRIVE_SERVICE_ACCOUNT_PATH", "")
-    google_drive_service_account_json: str = os.getenv("GOOGLE_DRIVE_SERVICE_ACCOUNT_JSON", "")
-    google_drive_allow_firebase_fallback: bool = _bool_env("GOOGLE_DRIVE_ALLOW_FIREBASE_FALLBACK", False)
-    google_drive_impersonate_user: str = os.getenv("GOOGLE_DRIVE_IMPERSONATE_USER", "")
-    google_drive_auth_mode: str = os.getenv("GOOGLE_DRIVE_AUTH_MODE", "service_account").strip().lower()
-    google_drive_expected_project_id: str = os.getenv("GOOGLE_DRIVE_EXPECTED_PROJECT_ID", "")
-    google_drive_oauth_client_id: str = os.getenv("GOOGLE_DRIVE_OAUTH_CLIENT_ID", "")
-    google_drive_oauth_client_secret: str = os.getenv("GOOGLE_DRIVE_OAUTH_CLIENT_SECRET", "")
-    google_drive_oauth_refresh_token: str = os.getenv("GOOGLE_DRIVE_OAUTH_REFRESH_TOKEN", "")
-    google_drive_oauth_token_uri: str = os.getenv("GOOGLE_DRIVE_OAUTH_TOKEN_URI", "https://oauth2.googleapis.com/token")
-    google_drive_oauth_project_id: str = os.getenv("GOOGLE_DRIVE_OAUTH_PROJECT_ID", "")
-    google_drive_oauth_user_email: str = os.getenv("GOOGLE_DRIVE_OAUTH_USER_EMAIL", "")
+    google_drive_service_account_path: str = field(
+        default_factory=lambda: os.getenv("GOOGLE_DRIVE_SERVICE_ACCOUNT_PATH", "")
+    )
+    google_drive_service_account_json: str = field(
+        default_factory=lambda: os.getenv("GOOGLE_DRIVE_SERVICE_ACCOUNT_JSON", "")
+    )
+    google_drive_allow_firebase_fallback: bool = field(
+        default_factory=lambda: _bool_env("GOOGLE_DRIVE_ALLOW_FIREBASE_FALLBACK", False)
+    )
+    google_drive_impersonate_user: str = field(
+        default_factory=lambda: os.getenv("GOOGLE_DRIVE_IMPERSONATE_USER", "")
+    )
+    google_drive_auth_mode: str = field(
+        default_factory=lambda: (
+            os.getenv("GOOGLE_DRIVE_AUTH_MODE", "service_account").strip().lower()
+        )
+    )
+    google_drive_expected_project_id: str = field(
+        default_factory=lambda: os.getenv("GOOGLE_DRIVE_EXPECTED_PROJECT_ID", "")
+    )
+    google_drive_oauth_client_id: str = field(
+        default_factory=lambda: os.getenv("GOOGLE_DRIVE_OAUTH_CLIENT_ID", "")
+    )
+    google_drive_oauth_client_secret: str = field(
+        default_factory=lambda: os.getenv("GOOGLE_DRIVE_OAUTH_CLIENT_SECRET", "")
+    )
+    google_drive_oauth_refresh_token: str = field(
+        default_factory=lambda: os.getenv("GOOGLE_DRIVE_OAUTH_REFRESH_TOKEN", "")
+    )
+    google_drive_oauth_token_uri: str = field(
+        default_factory=lambda: os.getenv(
+            "GOOGLE_DRIVE_OAUTH_TOKEN_URI", "https://oauth2.googleapis.com/token"
+        )
+    )
+    google_drive_oauth_project_id: str = field(
+        default_factory=lambda: os.getenv("GOOGLE_DRIVE_OAUTH_PROJECT_ID", "")
+    )
+    google_drive_oauth_user_email: str = field(
+        default_factory=lambda: os.getenv("GOOGLE_DRIVE_OAUTH_USER_EMAIL", "")
+    )
 
-    gemini_api_key: str = os.getenv("GEMINI_API_KEY", "")
-    gemini_model: str = os.getenv("GEMINI_MODEL", "gemini-2.5-flash-lite")
+    gemini_api_key: str = field(default_factory=lambda: os.getenv("GEMINI_API_KEY", ""))
+    gemini_model: str = field(
+        default_factory=lambda: os.getenv("GEMINI_MODEL", "gemini-2.5-flash-lite")
+    )
 
-    openrouter_api_key: str = os.getenv("OPENROUTER_API_KEY", "")
-    openrouter_model: str = os.getenv("OPENROUTER_MODEL", "meta-llama/llama-3.3-70b-instruct:free")
+    openrouter_api_key: str = field(
+        default_factory=lambda: os.getenv("OPENROUTER_API_KEY", "")
+    )
+    openrouter_model: str = field(
+        default_factory=lambda: os.getenv(
+            "OPENROUTER_MODEL", "meta-llama/llama-3.3-70b-instruct:free"
+        )
+    )
     openrouter_models: list[str] = None  # type: ignore[assignment]
     openrouter_ignored_providers: list[str] = None  # type: ignore[assignment]
     openrouter_blocked_model_fragments: list[str] = None  # type: ignore[assignment]
-    openrouter_site_url: str = os.getenv("OPENROUTER_SITE_URL", "")
-    openrouter_app_name: str = os.getenv("OPENROUTER_APP_NAME", "Conan Gray Bot")
+    openrouter_site_url: str = field(
+        default_factory=lambda: os.getenv("OPENROUTER_SITE_URL", "")
+    )
+    openrouter_app_name: str = field(
+        default_factory=lambda: os.getenv("OPENROUTER_APP_NAME", "Conan Gray Bot")
+    )
 
-    groq_api_key: str = os.getenv("GROQ_API_KEY", "")
-    groq_model: str = os.getenv("GROQ_MODEL", "llama-3.3-70b-versatile")
+    groq_api_key: str = field(default_factory=lambda: os.getenv("GROQ_API_KEY", ""))
+    groq_model: str = field(
+        default_factory=lambda: os.getenv("GROQ_MODEL", "llama-3.3-70b-versatile")
+    )
 
-    openweather_api_key: str = os.getenv("OPENWEATHER_API_KEY", "")
+    openweather_api_key: str = field(
+        default_factory=lambda: os.getenv("OPENWEATHER_API_KEY", "")
+    )
 
-    host: str = os.getenv("HOST", "0.0.0.0")
-    port: int = int(os.getenv("PORT", "8080"))
+    host: str = field(default_factory=lambda: os.getenv("HOST", "0.0.0.0"))
+    port: int = field(default_factory=lambda: int(os.getenv("PORT", "8080")))
 
     def __post_init__(self) -> None:
-        object.__setattr__(self, "cors_origins", _csv(os.getenv("CORS_ORIGINS")) or ["*"])
-        object.__setattr__(self, "openrouter_models", _csv(os.getenv("OPENROUTER_MODELS")))
+        object.__setattr__(self, "cors_origins", _csv(os.getenv("CORS_ORIGINS")))
+        if not 60 <= self.media_stream_ttl_seconds <= 3600:
+            raise ValueError("MEDIA_STREAM_TTL_SECONDS must be 60..3600")
+        if not 1 <= self.memory_retention_days <= 365:
+            raise ValueError("MEMORY_RETENTION_DAYS must be 1..365")
+        if self.environment == "production":
+            if (
+                len(self.core_service_token) < 32
+                or len(self.media_stream_signing_key) < 32
+            ):
+                raise ValueError(
+                    "Production requires independent service and media secrets of at least 32 characters"
+                )
+            if self.core_service_token == self.media_stream_signing_key:
+                raise ValueError("Service and media secrets must be independent")
+            if not self.guild_id.isdigit() or not self.staff_role_id.isdigit():
+                raise ValueError("Production requires Discord guild and staff role IDs")
+            if "*" in self.cors_origins:
+                raise ValueError("Wildcard production CORS is prohibited")
+        object.__setattr__(
+            self, "openrouter_models", _csv(os.getenv("OPENROUTER_MODELS"))
+        )
         object.__setattr__(
             self,
             "openrouter_ignored_providers",
@@ -91,7 +194,8 @@ class Settings:
         object.__setattr__(
             self,
             "openrouter_blocked_model_fragments",
-            _csv(os.getenv("OPENROUTER_BLOCKED_MODEL_FRAGMENTS")) or ["qwen", "nvidia", "nemotron"],
+            _csv(os.getenv("OPENROUTER_BLOCKED_MODEL_FRAGMENTS"))
+            or ["qwen", "nvidia", "nemotron"],
         )
 
 
@@ -232,7 +336,7 @@ AI_CONAN_STRUCTURE_INSTRUCTIONS = (
 )
 
 
-DEFAULT_BOT_CONFIG = {
+DEFAULT_BOT_CONFIG: dict[str, Any] = {
     "appearance": {
         "accentColor": "#67e8f9",
         "embedFooter": "Conan Gray Bot • online, dramatic, and glowing cyan",
@@ -324,6 +428,9 @@ DEFAULT_BOT_CONFIG = {
         "personality": AI_CONAN_BEST_FRIEND_PERSONALITY,
         "providerOrder": ["gemini", "openrouter", "groq"],
         "maxHistoryMessages": 36,
+        "maxPromptCharacters": 24000,
+        "memoryRetentionDays": 30,
+        "models": {"gemini": "", "openrouter": "", "groq": ""},
         "maxOutputTokens": 260,
     },
     "weather": {
@@ -506,7 +613,7 @@ DEFAULT_BOT_CONFIG = {
         ],
     },
     "admin": {
-        "roleId": "1514041404836282460",
+        "roleId": "",
         "deniedMessage": "You need the configured bot-admin role to use this command.",
         "memoryClearedMessage": "Shared memory has been cleared.",
         "restartMessage": "Restarting the Discord bot connection…",
@@ -597,15 +704,27 @@ _TEMPLATE_PARENT_KEYS = {
     "game_wouldyourather": "game",
 }
 _TEMPLATE_GLOBAL_DEFAULTS = dict(DEFAULT_BOT_CONFIG["messageTemplates"]["global"])
-for _template_name, _template_values in list(DEFAULT_BOT_CONFIG["messageTemplates"].items()):
+for _template_name, _template_values in list(
+    DEFAULT_BOT_CONFIG["messageTemplates"].items()
+):
     if _template_name == "global":
         continue
     _parent_name = _TEMPLATE_PARENT_KEYS.get(_template_name, "global")
-    _parent_defaults = dict(DEFAULT_BOT_CONFIG["messageTemplates"].get(_parent_name) or _TEMPLATE_GLOBAL_DEFAULTS)
+    _parent_defaults = dict(
+        DEFAULT_BOT_CONFIG["messageTemplates"].get(_parent_name)
+        or _TEMPLATE_GLOBAL_DEFAULTS
+    )
     DEFAULT_BOT_CONFIG["messageTemplates"][_template_name] = {
         **_TEMPLATE_GLOBAL_DEFAULTS,
         **_parent_defaults,
         **_template_values,
         "inheritGlobal": bool(_template_values.get("inheritGlobal", True)),
     }
-del _parent_defaults, _parent_name, _template_name, _template_values, _TEMPLATE_GLOBAL_DEFAULTS, _TEMPLATE_PARENT_KEYS
+del (
+    _parent_defaults,
+    _parent_name,
+    _template_name,
+    _template_values,
+    _TEMPLATE_GLOBAL_DEFAULTS,
+    _TEMPLATE_PARENT_KEYS,
+)

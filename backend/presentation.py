@@ -12,7 +12,6 @@ import discord
 
 from .ai_providers import AIProviderError, ask_ai
 
-
 KIND_TITLES = {
     "ai": "A note from the control room",
     "command": "Command result",
@@ -55,7 +54,14 @@ FEATURE_SUBJECTS = {
     "command": "the command result",
 }
 
-GAME_FEATURES = {"coinflip", "eightball", "rps", "guesssong", "wouldyourather", "tictactoe"}
+GAME_FEATURES = {
+    "coinflip",
+    "eightball",
+    "rps",
+    "guesssong",
+    "wouldyourather",
+    "tictactoe",
+}
 
 TEMPLATE_PARENT_KEYS = {
     "game_tictactoe": "game",
@@ -112,21 +118,39 @@ def _avatar_url(user: Any | None) -> str:
 def _actor_name(user: Any | None) -> str:
     if user is None:
         return "Discord user"
-    return str(getattr(user, "global_name", None) or getattr(user, "name", None) or "Discord user")
+    return str(
+        getattr(user, "global_name", None)
+        or getattr(user, "name", None)
+        or "Discord user"
+    )
 
 
-def _format_template(template: Any, values: Mapping[str, Any], fallback: str = "") -> str:
+def _format_template(
+    template: Any, values: Mapping[str, Any], fallback: str = ""
+) -> str:
     raw = str(template if template is not None else fallback)
-    normalized = _SafeTemplateValues({key: str(value or "") for key, value in values.items()})
+    normalized = _SafeTemplateValues(
+        {key: str(value or "") for key, value in values.items()}
+    )
     try:
         return raw.format_map(normalized).strip()
     except (ValueError, KeyError):
         return fallback.strip()
 
 
-def template_profile(config: dict[str, Any], template_key: str | None, kind: str) -> dict[str, Any]:
-    templates = config.get("messageTemplates") if isinstance(config.get("messageTemplates"), dict) else {}
-    global_profile = templates.get("global") if isinstance(templates.get("global"), dict) else {}
+def template_profile(
+    config: dict[str, Any], template_key: str | None, kind: str
+) -> dict[str, Any]:
+    templates = (
+        (config.get("messageTemplates") or {})
+        if isinstance(config.get("messageTemplates"), dict)
+        else {}
+    )
+    global_profile = (
+        (templates.get("global") or {})
+        if isinstance(templates.get("global"), dict)
+        else {}
+    )
     requested_key = str(template_key or kind or "info")
 
     def resolve(profile_key: str, visited: set[str] | None = None) -> dict[str, Any]:
@@ -137,7 +161,11 @@ def template_profile(config: dict[str, Any], template_key: str | None, kind: str
         if profile_key == "global":
             return dict(global_profile)
 
-        selected = templates.get(profile_key) if isinstance(templates.get(profile_key), dict) else {}
+        selected = (
+            (templates.get(profile_key) or {})
+            if isinstance(templates.get(profile_key), dict)
+            else {}
+        )
         parent_key = TEMPLATE_PARENT_KEYS.get(profile_key, "global")
         parent = resolve(parent_key, visited)
         if bool(selected.get("inheritGlobal", False)):
@@ -166,9 +194,15 @@ def render_feedback_template(
     actor_name = _actor_name(actor)
 
     raw_footer = appearance.get("embedFooter")
-    footer = str("Conan Gray Bot • soft-pop control room" if raw_footer is None else raw_footer).strip()
+    footer = str(
+        "Conan Gray Bot • soft-pop control room" if raw_footer is None else raw_footer
+    ).strip()
     notes: list[str] = []
-    if provider and config.get("ai", {}).get("includeProviderFooter", True) and bool(profile.get("showProvider", True)):
+    if (
+        provider
+        and config.get("ai", {}).get("includeProviderFooter", True)
+        and bool(profile.get("showProvider", True))
+    ):
         notes.append(f"AI via {provider}")
     if source_note and bool(profile.get("showSourceNote", True)):
         notes.append(source_note)
@@ -191,22 +225,43 @@ def render_feedback_template(
         values.update(context)
 
     accent = parse_color(appearance.get("accentColor"))
-    semantic_color = KIND_COLORS.get(kind, accent) if presentation.get("semanticColors", True) else accent
+    semantic_color = (
+        KIND_COLORS.get(kind, accent)
+        if presentation.get("semanticColors", True)
+        else accent
+    )
     profile_color = str(profile.get("color") or "").strip()
-    color = parse_color(profile_color, semantic_color) if profile_color else semantic_color
+    color = (
+        parse_color(profile_color, semantic_color) if profile_color else semantic_color
+    )
 
-    timestamp_default = bool(presentation.get("showTimestamp", appearance.get("embedShowTimestamp", True)))
+    timestamp_default = bool(
+        presentation.get("showTimestamp", appearance.get("embedShowTimestamp", True))
+    )
     requester_default = bool(presentation.get("showRequester", True))
     fields_default = bool(presentation.get("richDetailFields", True))
 
     return {
         "key": str(template_key or kind or "info"),
         "profile": profile,
-        "useEmbed": bool(profile.get("useEmbed", True)) and bool(presentation.get("embedEverywhere", True)),
-        "title": _format_template(profile.get("titleTemplate", "{title}"), values, base_title)[:256],
-        "description": _format_template(profile.get("descriptionTemplate", "{description}"), values, str(description or ""))[:4096],
-        "footer": _format_template(profile.get("footerTemplate", "{footer}"), values, footer)[:2048],
-        "author": _format_template(profile.get("authorTemplate", "Requested by {actor}"), values, f"Requested by {actor_name}")[:256],
+        "useEmbed": bool(profile.get("useEmbed", True))
+        and bool(presentation.get("embedEverywhere", True)),
+        "title": _format_template(
+            profile.get("titleTemplate", "{title}"), values, base_title
+        )[:256],
+        "description": _format_template(
+            profile.get("descriptionTemplate", "{description}"),
+            values,
+            str(description or ""),
+        )[:4096],
+        "footer": _format_template(
+            profile.get("footerTemplate", "{footer}"), values, footer
+        )[:2048],
+        "author": _format_template(
+            profile.get("authorTemplate", "Requested by {actor}"),
+            values,
+            f"Requested by {actor_name}",
+        )[:256],
         "thumbnail": _format_template(
             profile.get("thumbnailUrl") or appearance.get("embedThumbnailUrl") or "",
             values,
@@ -247,15 +302,21 @@ def build_feedback_embed(
         context=context,
     )
 
-    field_rows = [(str(name), str(value), bool(inline)) for name, value, inline in (fields or []) if value is not None and str(value).strip()]
+    field_rows = [
+        (str(name), str(value), bool(inline))
+        for name, value, inline in (fields or [])
+        if value is not None and str(value).strip()
+    ]
     final_description = rendered["description"]
     if field_rows and not rendered["showFields"]:
         flat_fields = "\n".join(f"**{name}:** {value}" for name, value, _ in field_rows)
-        final_description = "\n\n".join(part for part in [final_description, flat_fields] if part)
+        final_description = "\n\n".join(
+            part for part in [final_description, flat_fields] if part
+        )
         field_rows = []
 
     embed = discord.Embed(
-        title=rendered["title"] or None,
+        title=rendered["title"][:256] or None,
         description=final_description[:4096] or None,
         color=rendered["color"],
         timestamp=datetime.now(timezone.utc) if rendered["showTimestamp"] else None,
@@ -276,7 +337,31 @@ def build_feedback_embed(
     if image_url:
         embed.set_image(url=str(image_url))
     if rendered["footer"]:
-        embed.set_footer(text=rendered["footer"])
+        embed.set_footer(text=rendered["footer"][:2048])
+    if embed.author.name:
+        embed.set_author(
+            name=embed.author.name[:256], icon_url=embed.author.icon_url or None
+        )
+    # Discord limits all embed text together to 6000 characters and 25 fields.
+    budget = max(
+        0,
+        6000
+        - len(embed.title or "")
+        - len(embed.footer.text or "")
+        - len(embed.author.name or ""),
+    )
+    embed.description = (embed.description or "")[:budget] or None
+    budget -= len(embed.description or "")
+    original_fields = list(embed.fields)
+    embed.clear_fields()
+    for field in original_fields[:25]:
+        name = (field.name or "")[: min(256, max(0, budget - 1))]
+        budget -= len(name)
+        value = (field.value or "")[: min(1024, budget)]
+        if not name or not value:
+            break
+        embed.add_field(name=name, value=value, inline=field.inline)
+        budget -= len(value)
     return embed
 
 
@@ -305,7 +390,16 @@ def feedback_plain_text(
         context=context,
     )
     field_text = "\n".join(f"**{name}:** {value}" for name, value, _ in fields or [])
-    return "\n\n".join(part for part in [f"**{rendered['title']}**" if rendered["title"] else "", rendered["description"], field_text, f"-# {rendered['footer']}" if rendered["footer"] else ""] if part)[:2000]
+    return "\n\n".join(
+        part
+        for part in [
+            f"**{rendered['title']}**" if rendered["title"] else "",
+            rendered["description"],
+            field_text,
+            f"-# {rendered['footer']}" if rendered["footer"] else "",
+        ]
+        if part
+    )[:2000]
 
 
 def fallback_pool(feature: str, outcome: str = "", pool_size: int = 50) -> list[str]:
@@ -346,8 +440,12 @@ async def interpret_action(
                 "Never claim to be Conan Gray, never invent private facts, and never contradict the deterministic result."
             )
         )
-        narrator_ai["maxOutputTokens"] = max(40, min(int(presentation.get("narrationMaxTokens") or 140), 300))
-        narrator_ai["temperature"] = max(0.0, min(float(presentation.get("narrationTemperature") or 0.9), 1.5))
+        narrator_ai["maxOutputTokens"] = max(
+            40, min(int(presentation.get("narrationMaxTokens") or 140), 300)
+        )
+        narrator_ai["temperature"] = max(
+            0.0, min(float(presentation.get("narrationTemperature") or 0.9), 1.5)
+        )
         prompt = (
             f"Feature: {feature}\nOutcome: {outcome}\nExact facts: {facts}\n"
             f"Requester: {actor_name or 'unknown'}\n\n"
@@ -355,7 +453,9 @@ async def interpret_action(
             "Do not add headings, lists, quotes, fake memories, or a sign-off."
         )
         try:
-            timeout_seconds = max(2.0, min(float(presentation.get("narrationTimeoutSeconds") or 8), 20.0))
+            timeout_seconds = max(
+                2.0, min(float(presentation.get("narrationTimeoutSeconds") or 8), 20.0)
+            )
             text, provider = await asyncio.wait_for(
                 ask_ai(
                     narrator_config,
@@ -371,10 +471,14 @@ async def interpret_action(
         except (AIProviderError, Exception):
             pass
 
-    return random.choice(fallback_pool(feature, outcome, pool_size)), f"Fallback pool: {pool_size}"
+    return random.choice(
+        fallback_pool(feature, outcome, pool_size)
+    ), f"Fallback pool: {pool_size}"
 
 
-def _interaction_context(interaction: discord.Interaction, context: Mapping[str, Any] | None = None) -> dict[str, Any]:
+def _interaction_context(
+    interaction: discord.Interaction, context: Mapping[str, Any] | None = None
+) -> dict[str, Any]:
     merged = {
         "channel": getattr(getattr(interaction, "channel", None), "name", "channel"),
         "guild": getattr(getattr(interaction, "guild", None), "name", "server"),
@@ -384,7 +488,9 @@ def _interaction_context(interaction: discord.Interaction, context: Mapping[str,
     return merged
 
 
-def _message_context(message: discord.Message, context: Mapping[str, Any] | None = None) -> dict[str, Any]:
+def _message_context(
+    message: discord.Message, context: Mapping[str, Any] | None = None
+) -> dict[str, Any]:
     merged = {
         "channel": getattr(getattr(message, "channel", None), "name", "channel"),
         "guild": getattr(getattr(message, "guild", None), "name", "server"),
@@ -561,8 +667,14 @@ def components_v2_media_payload(
     )
     children: list[dict[str, Any]] = []
     heading = f"## {rendered['title']}" if rendered["title"] else ""
-    requester = f"-# {rendered['author']}" if rendered["showRequester"] and actor is not None else ""
-    intro = "\n".join(part for part in [requester, heading, rendered["description"]] if part)
+    requester = (
+        f"-# {rendered['author']}"
+        if rendered["showRequester"] and actor is not None
+        else ""
+    )
+    intro = "\n".join(
+        part for part in [requester, heading, rendered["description"]] if part
+    )
     if intro:
         children.append({"type": 10, "content": intro[:4000]})
     children.append(
@@ -577,16 +689,29 @@ def components_v2_media_payload(
             ],
         }
     )
-    field_lines = [f"**{name}:** {value}" for name, value, _ in (fields or []) if str(value).strip()]
+    field_lines = [
+        f"**{name}:** {value}"
+        for name, value, _ in (fields or [])
+        if str(value).strip()
+    ]
     if field_lines or rendered["footer"]:
         children.append({"type": 14, "divider": True, "spacing": 1})
         details = "\n".join(field_lines)
         footer = f"-# {rendered['footer']}" if rendered["footer"] else ""
-        children.append({"type": 10, "content": "\n".join(part for part in [details, footer] if part)[:4000]})
+        children.append(
+            {
+                "type": 10,
+                "content": "\n".join(part for part in [details, footer] if part)[:4000],
+            }
+        )
     return {
         "flags": 1 << 15,
-        "components": [{"type": 17, "accent_color": rendered["color"], "components": children}],
-        "attachments": [{"id": 0, "filename": filename, "description": media_description[:1024]}],
+        "components": [
+            {"type": 17, "accent_color": rendered["color"], "components": children}
+        ],
+        "attachments": [
+            {"id": 0, "filename": filename, "description": media_description[:1024]}
+        ],
         "allowed_mentions": {"parse": []},
     }
 
@@ -630,26 +755,38 @@ async def send_interaction_inline_media_card(
     )
     requester = f"-# {rendered['author']}" if rendered["showRequester"] else ""
     heading = f"## {rendered['title']}" if rendered["title"] else ""
-    intro = "\n".join(part for part in [requester, heading, rendered["description"]] if part)
+    intro = "\n".join(
+        part for part in [requester, heading, rendered["description"]] if part
+    )
 
-    attachment = discord.File(path, filename=filename, description=media_description[:1024])
+    attachment = discord.File(
+        path, filename=filename, description=media_description[:1024]
+    )
     gallery_item = discord.components.MediaGalleryItem(
         attachment,
         description=media_description[:1024],
         spoiler=False,
     )
-    gallery = discord.ui.MediaGallery(gallery_item)
+    gallery: discord.ui.MediaGallery[Any] = discord.ui.MediaGallery(gallery_item)
     children: list[Any] = []
     if intro:
         children.append(discord.ui.TextDisplay(intro[:4000]))
     children.append(gallery)
 
-    field_lines = [f"**{name}:** {value}" for name, value, _ in (fields or []) if str(value).strip()]
+    field_lines = [
+        f"**{name}:** {value}"
+        for name, value, _ in (fields or [])
+        if str(value).strip()
+    ]
     if field_lines or rendered["footer"]:
         children.append(discord.ui.Separator())
         details = "\n".join(field_lines)
         footer = f"-# {rendered['footer']}" if rendered["footer"] else ""
-        children.append(discord.ui.TextDisplay("\n".join(part for part in [details, footer] if part)[:4000]))
+        children.append(
+            discord.ui.TextDisplay(
+                "\n".join(part for part in [details, footer] if part)[:4000]
+            )
+        )
 
     container = discord.ui.Container(*children, accent_color=rendered["color"])
     view = discord.ui.LayoutView(timeout=None)
@@ -664,11 +801,12 @@ async def send_interaction_inline_media_card(
                 view=view,
             )
         if interaction.response.is_done():
-            return await interaction.followup.send(file=attachment, view=view, wait=True)
+            return await interaction.followup.send(
+                file=attachment, view=view, wait=True
+            )
         return await interaction.response.send_message(file=attachment, view=view)
     finally:
         attachment.close()
-
 
 
 async def send_message_inline_media_card(
@@ -705,26 +843,38 @@ async def send_message_inline_media_card(
     )
     requester = f"-# {rendered['author']}" if rendered["showRequester"] else ""
     heading = f"## {rendered['title']}" if rendered["title"] else ""
-    intro = "\n".join(part for part in [requester, heading, rendered["description"]] if part)
+    intro = "\n".join(
+        part for part in [requester, heading, rendered["description"]] if part
+    )
 
-    attachment = discord.File(path, filename=filename, description=media_description[:1024])
+    attachment = discord.File(
+        path, filename=filename, description=media_description[:1024]
+    )
     gallery_item = discord.components.MediaGalleryItem(
         attachment,
         description=media_description[:1024],
         spoiler=False,
     )
-    gallery = discord.ui.MediaGallery(gallery_item)
+    gallery: discord.ui.MediaGallery[Any] = discord.ui.MediaGallery(gallery_item)
     children: list[Any] = []
     if intro:
         children.append(discord.ui.TextDisplay(intro[:4000]))
     children.append(gallery)
 
-    field_lines = [f"**{name}:** {value}" for name, value, _ in (fields or []) if str(value).strip()]
+    field_lines = [
+        f"**{name}:** {value}"
+        for name, value, _ in (fields or [])
+        if str(value).strip()
+    ]
     if field_lines or rendered["footer"]:
         children.append(discord.ui.Separator())
         details = "\n".join(field_lines)
         footer = f"-# {rendered['footer']}" if rendered["footer"] else ""
-        children.append(discord.ui.TextDisplay("\n".join(part for part in [details, footer] if part)[:4000]))
+        children.append(
+            discord.ui.TextDisplay(
+                "\n".join(part for part in [details, footer] if part)[:4000]
+            )
+        )
 
     container = discord.ui.Container(*children, accent_color=rendered["color"])
     view = discord.ui.LayoutView(timeout=None)

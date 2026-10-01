@@ -25,6 +25,10 @@ from .config import (
     GUESS_SONG_PREVIOUS_DEFAULT_ROWS,
     get_settings,
 )
+from .io import run_blocking
+from .logging import safe_payload
+from .retention import expired, expiry
+from .state import TTLRegistry
 
 log = logging.getLogger("conan.firebase")
 
@@ -37,34 +41,72 @@ def _session_doc_id(channel_id: str, branch_id: str) -> str:
     return f"{channel_id}--{branch_id}"
 
 
+def initial_config() -> dict[str, Any]:
+    config = copy.deepcopy(DEFAULT_BOT_CONFIG)
+    settings = get_settings()
+    config["ai"]["channelId"] = settings.ai_channel_id
+    config["ai"]["memoryRetentionDays"] = settings.memory_retention_days
+    config["games"]["allowedCategoryId"] = settings.allowed_category_id
+    return config
+
+
 class MemoryStore:
     def __init__(self) -> None:
         self._guilds: dict[str, dict[str, Any]] = {}
-        self._sessions: dict[str, dict[str, Any]] = {}
-        self._branch_refs: dict[str, str] = {}
-        self._active_branches: dict[str, str] = {}
+        self._config_lock = asyncio.Lock()
+        self._command_manifests: dict[str, str] = {}
+        self._sessions: TTLRegistry[dict[str, Any]] = TTLRegistry(
+            5000, get_settings().memory_retention_days * 86400
+        )
+        self._branch_refs: TTLRegistry[str] = TTLRegistry(
+            5000, get_settings().memory_retention_days * 86400
+        )
+        self._active_branches: TTLRegistry[str] = TTLRegistry(
+            5000, get_settings().memory_retention_days * 86400
+        )
         self._logs: dict[str, list[dict[str, Any]]] = {}
         self._media: dict[str, list[dict[str, Any]]] = {}
-        self._guessing_games: dict[str, dict[str, Any]] = {}
+        self._guessing_games: TTLRegistry[dict[str, Any]] = TTLRegistry(
+            5000, get_settings().memory_retention_days * 86400
+        )
+
+    async def get_command_manifest(self, scope: str) -> str | None:
+        return self._command_manifests.get(scope)
+
+    async def set_command_manifest(self, scope: str, digest: str) -> None:
+        self._command_manifests[scope] = digest
 
     async def get_config(self, guild_id: str) -> dict[str, Any]:
-        config = self._guilds.get(guild_id)
-        if not config:
-            config = copy.deepcopy(DEFAULT_BOT_CONFIG)
-            config["ai"]["channelId"] = get_settings().ai_channel_id
-            config["games"]["allowedCategoryId"] = get_settings().allowed_category_id
-            self._guilds[guild_id] = config
-        return copy.deepcopy(config)
+        from .migrations import migrate_config
 
-    async def set_config(self, guild_id: str, config: dict[str, Any]) -> dict[str, Any]:
-        merged = merge_bot_config(config)
-        self._guilds[guild_id] = merged
-        await self.add_log(guild_id, "config.updated", {"source": "dashboard"})
+        config = self._guilds.get(guild_id) or initial_config()
+        return migrate_config(config)
+
+    async def set_config(
+        self,
+        guild_id: str,
+        config: dict[str, Any],
+        expected_revision: int | None = None,
+    ) -> dict[str, Any]:
+        from .migrations import RevisionConflict, migrate_config
+
+        async with self._config_lock:
+            current = await self.get_config(guild_id)
+            if (
+                expected_revision is not None
+                and current["revision"] != expected_revision
+            ):
+                raise RevisionConflict("Configuration changed; reload before saving")
+            merged = migrate_config(config)
+            merged["revision"] = current["revision"] + 1
+            self._guilds[guild_id] = merged
         return copy.deepcopy(merged)
 
-    async def get_branch_session(self, guild_id: str, channel_id: str, branch_id: str) -> dict[str, Any]:
+    async def get_branch_session(
+        self, guild_id: str, channel_id: str, branch_id: str
+    ) -> dict[str, Any]:
         row = self._sessions.get(_session_key(guild_id, channel_id, branch_id))
-        if not row:
+        if not row or expired(row):
             return {
                 "channelId": channel_id,
                 "branchId": branch_id,
@@ -87,19 +129,26 @@ class MemoryStore:
         message_ids: list[str] | None = None,
         make_active: bool = True,
     ) -> None:
+        deadline = expiry(
+            (await self.get_config(guild_id))["ai"]["memoryRetentionDays"]
+        )
         key = _session_key(guild_id, channel_id, branch_id)
         previous = self._sessions.get(key) or {}
         # Keep every participating user/bot message in the retained history mapped
         # to the same branch. Prune mappings that fell out of the history window so
         # the reply index stays bounded instead of growing forever.
         ref_ids = {str(item) for item in (message_ids or []) if str(item)}
-        resolved_latest = str(latest_bot_message_id or previous.get("latestBotMessageId") or "")
+        resolved_latest = str(
+            latest_bot_message_id or previous.get("latestBotMessageId") or ""
+        )
         resolved_root = str(root_message_id or previous.get("rootMessageId") or "")
         if resolved_latest:
             ref_ids.add(resolved_latest)
         if resolved_root:
             ref_ids.add(resolved_root)
-        previous_ref_ids = {str(item) for item in (previous.get("messageIds") or []) if str(item)}
+        previous_ref_ids = {
+            str(item) for item in (previous.get("messageIds") or []) if str(item)
+        }
         for message_id in previous_ref_ids - ref_ids:
             ref_key = f"{guild_id}:{channel_id}:{message_id}"
             if self._branch_refs.get(ref_key) == branch_id:
@@ -113,6 +162,7 @@ class MemoryStore:
             "rootMessageId": resolved_root,
             "messageIds": sorted(ref_ids),
             "updatedAt": datetime.now(timezone.utc).isoformat(),
+            "expiresAt": deadline.isoformat(),
         }
         self._sessions[key] = row
         for message_id in ref_ids:
@@ -120,18 +170,34 @@ class MemoryStore:
         if make_active:
             self._active_branches[f"{guild_id}:{channel_id}"] = branch_id
 
-    async def resolve_reply_branch(self, guild_id: str, channel_id: str, message_id: str) -> str | None:
-        return self._branch_refs.get(f"{guild_id}:{channel_id}:{message_id}")
+    async def resolve_reply_branch(
+        self, guild_id: str, channel_id: str, message_id: str
+    ) -> str | None:
+        branch = self._branch_refs.get(f"{guild_id}:{channel_id}:{message_id}")
+        if branch and expired(
+            self._sessions.get(_session_key(guild_id, channel_id, branch)) or {}
+        ):
+            return None
+        return branch
 
     async def get_active_branch(self, guild_id: str, channel_id: str) -> str | None:
-        return self._active_branches.get(f"{guild_id}:{channel_id}")
+        branch = self._active_branches.get(f"{guild_id}:{channel_id}")
+        if branch and expired(
+            self._sessions.get(_session_key(guild_id, channel_id, branch)) or {}
+        ):
+            return None
+        return branch
 
-    async def set_active_branch(self, guild_id: str, channel_id: str, branch_id: str) -> None:
+    async def set_active_branch(
+        self, guild_id: str, channel_id: str, branch_id: str
+    ) -> None:
         self._active_branches[f"{guild_id}:{channel_id}"] = branch_id
 
     # Compatibility helpers for older code/tests. The default branch is intentionally
     # not used by the Discord handler once branch-memory mode is enabled.
-    async def get_session(self, guild_id: str, channel_id: str, branch_id: str = "default") -> list[dict[str, Any]]:
+    async def get_session(
+        self, guild_id: str, channel_id: str, branch_id: str = "default"
+    ) -> list[dict[str, Any]]:
         row = await self.get_branch_session(guild_id, channel_id, branch_id)
         return copy.deepcopy(row.get("messages") or [])
 
@@ -174,9 +240,18 @@ class MemoryStore:
 
     async def session_stats(self, guild_id: str) -> dict[str, int]:
         prefix = f"{guild_id}:"
-        rows = [row for key, row in self._sessions.items() if key.startswith(prefix) and row.get("messages")]
-        channels = {str(row.get("channelId") or "") for row in rows if row.get("channelId")}
-        return {"channels": len(channels), "messages": sum(len(row.get("messages") or []) for row in rows)}
+        rows = [
+            row
+            for key, row in self._sessions.items()
+            if key.startswith(prefix) and row.get("messages") and not expired(row)
+        ]
+        channels = {
+            str(row.get("channelId") or "") for row in rows if row.get("channelId")
+        }
+        return {
+            "channels": len(channels),
+            "messages": sum(len(row.get("messages") or []) for row in rows),
+        }
 
     async def set_guessing_game(
         self,
@@ -186,12 +261,14 @@ class MemoryStore:
         state: dict[str, Any],
     ) -> dict[str, Any]:
         row = copy.deepcopy(state)
-        row.update({
-            "guildId": str(guild_id),
-            "channelId": str(channel_id),
-            "botMessageId": str(bot_message_id),
-            "updatedAt": datetime.now(timezone.utc).isoformat(),
-        })
+        row.update(
+            {
+                "guildId": str(guild_id),
+                "channelId": str(channel_id),
+                "botMessageId": str(bot_message_id),
+                "updatedAt": datetime.now(timezone.utc).isoformat(),
+            }
+        )
         self._guessing_games[f"{guild_id}:{channel_id}:{bot_message_id}"] = row
         return copy.deepcopy(row)
 
@@ -222,13 +299,17 @@ class MemoryStore:
         channel_id: str,
         bot_message_id: str,
     ) -> dict[str, Any] | None:
-        row = self._guessing_games.pop(f"{guild_id}:{channel_id}:{bot_message_id}", None)
+        row = self._guessing_games.pop(
+            f"{guild_id}:{channel_id}:{bot_message_id}", None
+        )
         return copy.deepcopy(row) if row else None
 
-    async def add_log(self, guild_id: str, event: str, payload: dict[str, Any] | None = None) -> None:
+    async def add_log(
+        self, guild_id: str, event: str, payload: dict[str, Any] | None = None
+    ) -> None:
         row = {
             "event": event,
-            "payload": payload or {},
+            "payload": safe_payload(payload or {}),
             "createdAt": datetime.now(timezone.utc).isoformat(),
         }
         self._logs.setdefault(guild_id, []).insert(0, row)
@@ -237,7 +318,9 @@ class MemoryStore:
     async def list_logs(self, guild_id: str, limit: int = 80) -> list[dict[str, Any]]:
         return copy.deepcopy(self._logs.get(guild_id, [])[:limit])
 
-    async def add_media_record(self, guild_id: str, record: dict[str, Any]) -> dict[str, Any]:
+    async def add_media_record(
+        self, guild_id: str, record: dict[str, Any]
+    ) -> dict[str, Any]:
         row = copy.deepcopy(record)
         row.setdefault("recordId", uuid4().hex)
         row.setdefault("createdAt", datetime.now(timezone.utc).isoformat())
@@ -255,18 +338,26 @@ class MemoryStore:
     ) -> list[dict[str, Any]]:
         rows = self._media.get(guild_id, [])
         if media_type:
-            rows = [row for row in rows if str(row.get("mediaType") or "") == media_type]
+            rows = [
+                row for row in rows if str(row.get("mediaType") or "") == media_type
+            ]
         if channel_id:
-            rows = [row for row in rows if str(row.get("channelId") or "") == channel_id]
+            rows = [
+                row for row in rows if str(row.get("channelId") or "") == channel_id
+            ]
         return copy.deepcopy(rows[: max(1, min(limit, 250))])
 
-    async def get_media_record(self, guild_id: str, record_id: str) -> dict[str, Any] | None:
+    async def get_media_record(
+        self, guild_id: str, record_id: str
+    ) -> dict[str, Any] | None:
         for row in self._media.get(guild_id, []):
             if str(row.get("recordId") or "") == record_id:
                 return copy.deepcopy(row)
         return None
 
-    async def delete_media_record(self, guild_id: str, record_id: str) -> dict[str, Any] | None:
+    async def delete_media_record(
+        self, guild_id: str, record_id: str
+    ) -> dict[str, Any] | None:
         rows = self._media.get(guild_id, [])
         for index, row in enumerate(rows):
             if str(row.get("recordId") or "") == record_id:
@@ -288,46 +379,103 @@ class FirestoreStore:
     def __init__(self, client: Any) -> None:
         self.client = client
 
+    async def get_command_manifest(self, scope: str) -> str | None:
+        def work():
+            snap = self.client.collection("command_manifests").document(scope).get()
+            return (snap.to_dict() or {}).get("digest") if snap.exists else None
+
+        return await run_blocking(work)
+
+    async def set_command_manifest(self, scope: str, digest: str) -> None:
+        await run_blocking(
+            lambda: (
+                self.client.collection("command_manifests")
+                .document(scope)
+                .set({"digest": digest, "updatedAt": _server_timestamp()}, merge=False)
+            )
+        )
+
     async def get_config(self, guild_id: str) -> dict[str, Any]:
+        from .migrations import migrate_config
+
         def work() -> dict[str, Any]:
-            ref = self.client.collection("guilds").document(guild_id)
-            snap = ref.get()
-            if not snap.exists:
-                config = copy.deepcopy(DEFAULT_BOT_CONFIG)
-                config["ai"]["channelId"] = get_settings().ai_channel_id
-                config["games"]["allowedCategoryId"] = get_settings().allowed_category_id
-                ref.set({"config": config, "updatedAt": _server_timestamp()}, merge=True)
-                return config
-            data = snap.to_dict() or {}
-            return merge_bot_config(data.get("config") or {})
-
-        return await asyncio.to_thread(work)
-
-    async def set_config(self, guild_id: str, config: dict[str, Any]) -> dict[str, Any]:
-        merged = merge_bot_config(config)
-
-        def work() -> None:
-            self.client.collection("guilds").document(guild_id).set(
-                {"config": merged, "updatedAt": _server_timestamp()},
-                merge=True,
+            snap = self.client.collection("guilds").document(guild_id).get()
+            return migrate_config(
+                (snap.to_dict() or {}).get("config") or initial_config()
             )
 
-        await asyncio.to_thread(work)
-        await self.add_log(guild_id, "config.updated", {"source": "dashboard"})
-        return merged
+        return await run_blocking(work)
+
+    async def set_config(
+        self,
+        guild_id: str,
+        config: dict[str, Any],
+        expected_revision: int | None = None,
+    ) -> dict[str, Any]:
+        from firebase_admin import firestore
+
+        from .migrations import RevisionConflict, migrate_config
+
+        def work() -> dict[str, Any]:
+            ref = self.client.collection("guilds").document(guild_id)
+            transaction = self.client.transaction()
+
+            @firestore.transactional
+            def update(tx):
+                snap = ref.get(transaction=tx)
+                current = migrate_config(
+                    (snap.to_dict() or {}).get("config") or initial_config()
+                )
+                if (
+                    expected_revision is not None
+                    and current["revision"] != expected_revision
+                ):
+                    raise RevisionConflict(
+                        "Configuration changed; reload before saving"
+                    )
+                merged = migrate_config(config)
+                merged["revision"] = current["revision"] + 1
+                tx.set(
+                    ref,
+                    {"config": merged, "updatedAt": _server_timestamp()},
+                    merge=True,
+                )
+                return merged
+
+            return update(transaction)
+
+        return await run_blocking(work)
 
     def _sessions_collection(self, guild_id: str) -> Any:
-        return self.client.collection("guilds").document(guild_id).collection("ai_sessions")
+        return (
+            self.client.collection("guilds")
+            .document(guild_id)
+            .collection("ai_sessions")
+        )
 
     def _refs_collection(self, guild_id: str) -> Any:
-        return self.client.collection("guilds").document(guild_id).collection("ai_branch_refs")
+        return (
+            self.client.collection("guilds")
+            .document(guild_id)
+            .collection("ai_branch_refs")
+        )
 
     def _channel_state_collection(self, guild_id: str) -> Any:
-        return self.client.collection("guilds").document(guild_id).collection("ai_channel_state")
+        return (
+            self.client.collection("guilds")
+            .document(guild_id)
+            .collection("ai_channel_state")
+        )
 
-    async def get_branch_session(self, guild_id: str, channel_id: str, branch_id: str) -> dict[str, Any]:
+    async def get_branch_session(
+        self, guild_id: str, channel_id: str, branch_id: str
+    ) -> dict[str, Any]:
         def work() -> dict[str, Any]:
-            snap = self._sessions_collection(guild_id).document(_session_doc_id(channel_id, branch_id)).get()
+            snap = (
+                self._sessions_collection(guild_id)
+                .document(_session_doc_id(channel_id, branch_id))
+                .get()
+            )
             if not snap.exists:
                 return {
                     "channelId": channel_id,
@@ -338,16 +486,27 @@ class FirestoreStore:
                     "messageIds": [],
                 }
             data = snap.to_dict() or {}
+            if expired(data):
+                return {
+                    "channelId": channel_id,
+                    "branchId": branch_id,
+                    "messages": [],
+                    "latestBotMessageId": "",
+                    "rootMessageId": "",
+                    "messageIds": [],
+                }
             return {
                 "channelId": str(data.get("channelId") or channel_id),
                 "branchId": str(data.get("branchId") or branch_id),
                 "messages": data.get("messages") or [],
                 "latestBotMessageId": str(data.get("latestBotMessageId") or ""),
                 "rootMessageId": str(data.get("rootMessageId") or ""),
-                "messageIds": [str(item) for item in (data.get("messageIds") or []) if str(item)],
+                "messageIds": [
+                    str(item) for item in (data.get("messageIds") or []) if str(item)
+                ],
             }
 
-        return await asyncio.to_thread(work)
+        return await run_blocking(work)
 
     async def set_branch_session(
         self,
@@ -361,20 +520,30 @@ class FirestoreStore:
         message_ids: list[str] | None = None,
         make_active: bool = True,
     ) -> None:
+        deadline = expiry(
+            (await self.get_config(guild_id))["ai"]["memoryRetentionDays"]
+        )
+
         def work() -> None:
-            session_ref = self._sessions_collection(guild_id).document(_session_doc_id(channel_id, branch_id))
+            session_ref = self._sessions_collection(guild_id).document(
+                _session_doc_id(channel_id, branch_id)
+            )
             previous_snap = session_ref.get()
             previous = previous_snap.to_dict() if previous_snap.exists else {}
             previous = previous or {}
             resolved_root = str(root_message_id or previous.get("rootMessageId") or "")
-            resolved_latest = str(latest_bot_message_id or previous.get("latestBotMessageId") or "")
+            resolved_latest = str(
+                latest_bot_message_id or previous.get("latestBotMessageId") or ""
+            )
 
             ref_ids = {str(item) for item in (message_ids or []) if str(item)}
             if resolved_latest:
                 ref_ids.add(resolved_latest)
             if resolved_root:
                 ref_ids.add(resolved_root)
-            previous_ref_ids = {str(item) for item in (previous.get("messageIds") or []) if str(item)}
+            previous_ref_ids = {
+                str(item) for item in (previous.get("messageIds") or []) if str(item)
+            }
 
             batch = self.client.batch()
             for message_id in previous_ref_ids - ref_ids:
@@ -389,6 +558,7 @@ class FirestoreStore:
                     "rootMessageId": resolved_root,
                     "messageIds": sorted(ref_ids),
                     "updatedAt": _server_timestamp(),
+                    "expiresAt": deadline,
                 },
                 merge=False,
             )
@@ -400,6 +570,7 @@ class FirestoreStore:
                         "channelId": channel_id,
                         "branchId": branch_id,
                         "updatedAt": _server_timestamp(),
+                        "expiresAt": deadline,
                     },
                     merge=False,
                 )
@@ -410,51 +581,69 @@ class FirestoreStore:
                         "channelId": channel_id,
                         "activeBranchId": branch_id,
                         "updatedAt": _server_timestamp(),
+                        "expiresAt": deadline,
                     },
                     merge=False,
                 )
             batch.commit()
 
-        await asyncio.to_thread(work)
+        await run_blocking(work)
 
-    async def resolve_reply_branch(self, guild_id: str, channel_id: str, message_id: str) -> str | None:
+    async def resolve_reply_branch(
+        self, guild_id: str, channel_id: str, message_id: str
+    ) -> str | None:
         def work() -> str | None:
             snap = self._refs_collection(guild_id).document(str(message_id)).get()
             if not snap.exists:
                 return None
             data = snap.to_dict() or {}
+            if expired(data):
+                return None
             if str(data.get("channelId") or "") != str(channel_id):
                 return None
             branch_id = str(data.get("branchId") or "")
             return branch_id or None
 
-        return await asyncio.to_thread(work)
+        return await run_blocking(work)
 
     async def get_active_branch(self, guild_id: str, channel_id: str) -> str | None:
         def work() -> str | None:
-            snap = self._channel_state_collection(guild_id).document(str(channel_id)).get()
+            snap = (
+                self._channel_state_collection(guild_id).document(str(channel_id)).get()
+            )
             if not snap.exists:
                 return None
             data = snap.to_dict() or {}
+            if expired(data):
+                return None
             branch_id = str(data.get("activeBranchId") or "")
             return branch_id or None
 
-        return await asyncio.to_thread(work)
+        return await run_blocking(work)
 
-    async def set_active_branch(self, guild_id: str, channel_id: str, branch_id: str) -> None:
+    async def set_active_branch(
+        self, guild_id: str, channel_id: str, branch_id: str
+    ) -> None:
+        deadline = expiry(
+            (await self.get_config(guild_id))["ai"]["memoryRetentionDays"]
+        )
+
         def work() -> None:
             self._channel_state_collection(guild_id).document(str(channel_id)).set(
                 {
                     "channelId": channel_id,
                     "activeBranchId": branch_id,
                     "updatedAt": _server_timestamp(),
+                    "expiresAt": deadline,
                 },
                 merge=False,
             )
 
-        await asyncio.to_thread(work)
+        await run_blocking(work)
 
-    async def get_session(self, guild_id: str, channel_id: str, branch_id: str = "default") -> list[dict[str, Any]]:
+    async def get_session(
+        self, guild_id: str, channel_id: str, branch_id: str = "default"
+    ) -> list[dict[str, Any]]:
         row = await self.get_branch_session(guild_id, channel_id, branch_id)
         return row.get("messages") or []
 
@@ -469,11 +658,23 @@ class FirestoreStore:
 
     async def clear_session(self, guild_id: str, channel_id: str) -> None:
         def work() -> None:
-            sessions = list(self._sessions_collection(guild_id).where("channelId", "==", channel_id).stream())
+            sessions = list(
+                self._sessions_collection(guild_id)
+                .where("channelId", "==", channel_id)
+                .stream()
+            )
             legacy = self._sessions_collection(guild_id).document(channel_id).get()
-            refs = list(self._refs_collection(guild_id).where("channelId", "==", channel_id).stream())
-            state = self._channel_state_collection(guild_id).document(str(channel_id)).get()
-            raw_refs = [doc.reference for doc in sessions] + [doc.reference for doc in refs]
+            refs = list(
+                self._refs_collection(guild_id)
+                .where("channelId", "==", channel_id)
+                .stream()
+            )
+            state = (
+                self._channel_state_collection(guild_id).document(str(channel_id)).get()
+            )
+            raw_refs = [doc.reference for doc in sessions] + [
+                doc.reference for doc in refs
+            ]
             if legacy.exists:
                 raw_refs.append(legacy.reference)
             if state.exists:
@@ -485,7 +686,7 @@ class FirestoreStore:
                     batch.delete(ref)
                 batch.commit()
 
-        await asyncio.to_thread(work)
+        await run_blocking(work)
 
     async def clear_guild_sessions(self, guild_id: str) -> int:
         def work() -> int:
@@ -500,7 +701,11 @@ class FirestoreStore:
                     channel_id = doc.id
                 if channel_id:
                     channels.add(channel_id)
-            all_refs = [doc.reference for doc in session_docs] + [doc.reference for doc in ref_docs] + [doc.reference for doc in state_docs]
+            all_refs = (
+                [doc.reference for doc in session_docs]
+                + [doc.reference for doc in ref_docs]
+                + [doc.reference for doc in state_docs]
+            )
             for start in range(0, len(all_refs), 400):
                 batch = self.client.batch()
                 for ref in all_refs[start : start + 400]:
@@ -508,7 +713,7 @@ class FirestoreStore:
                 batch.commit()
             return len(channels)
 
-        return await asyncio.to_thread(work)
+        return await run_blocking(work)
 
     async def session_stats(self, guild_id: str) -> dict[str, int]:
         def work() -> dict[str, int]:
@@ -517,7 +722,7 @@ class FirestoreStore:
             for doc in self._sessions_collection(guild_id).stream():
                 data = doc.to_dict() or {}
                 stored = data.get("messages") or []
-                if not stored:
+                if expired(data) or not stored:
                     continue
                 channel_id = str(data.get("channelId") or "")
                 if not channel_id and "--" not in doc.id:
@@ -527,10 +732,14 @@ class FirestoreStore:
                 messages += len(stored)
             return {"channels": len(channels), "messages": messages}
 
-        return await asyncio.to_thread(work)
+        return await run_blocking(work)
 
     def _guessing_games_collection(self, guild_id: str) -> Any:
-        return self.client.collection("guilds").document(guild_id).collection("guessing_games")
+        return (
+            self.client.collection("guilds")
+            .document(guild_id)
+            .collection("guessing_games")
+        )
 
     async def set_guessing_game(
         self,
@@ -540,17 +749,21 @@ class FirestoreStore:
         state: dict[str, Any],
     ) -> dict[str, Any]:
         row = copy.deepcopy(state)
-        row.update({
-            "guildId": str(guild_id),
-            "channelId": str(channel_id),
-            "botMessageId": str(bot_message_id),
-            "updatedAt": datetime.now(timezone.utc).isoformat(),
-        })
+        row.update(
+            {
+                "guildId": str(guild_id),
+                "channelId": str(channel_id),
+                "botMessageId": str(bot_message_id),
+                "updatedAt": datetime.now(timezone.utc).isoformat(),
+            }
+        )
 
         def work() -> None:
-            self._guessing_games_collection(guild_id).document(str(bot_message_id)).set(row, merge=False)
+            self._guessing_games_collection(guild_id).document(str(bot_message_id)).set(
+                row, merge=False
+            )
 
-        await asyncio.to_thread(work)
+        await run_blocking(work)
         return row
 
     async def get_guessing_game(
@@ -560,7 +773,9 @@ class FirestoreStore:
         bot_message_id: str,
     ) -> dict[str, Any] | None:
         def work() -> dict[str, Any] | None:
-            ref = self._guessing_games_collection(guild_id).document(str(bot_message_id))
+            ref = self._guessing_games_collection(guild_id).document(
+                str(bot_message_id)
+            )
             snap = ref.get()
             if not snap.exists:
                 return None
@@ -578,7 +793,7 @@ class FirestoreStore:
                     pass
             return row
 
-        return await asyncio.to_thread(work)
+        return await run_blocking(work)
 
     async def delete_guessing_game(
         self,
@@ -589,19 +804,32 @@ class FirestoreStore:
         row = await self.get_guessing_game(guild_id, channel_id, bot_message_id)
         if row is None:
             return None
-        await asyncio.to_thread(self._guessing_games_collection(guild_id).document(str(bot_message_id)).delete)
+        await run_blocking(
+            self._guessing_games_collection(guild_id)
+            .document(str(bot_message_id))
+            .delete
+        )
         return row
 
-    async def add_log(self, guild_id: str, event: str, payload: dict[str, Any] | None = None) -> None:
+    async def add_log(
+        self, guild_id: str, event: str, payload: dict[str, Any] | None = None
+    ) -> None:
         def work() -> None:
             (
                 self.client.collection("guilds")
                 .document(guild_id)
                 .collection("logs")
-                .add({"event": event, "payload": payload or {}, "createdAt": _server_timestamp()})
+                .add(
+                    {
+                        "event": event,
+                        "payload": safe_payload(payload or {}),
+                        "createdAt": _server_timestamp(),
+                        "expiresAt": expiry(30),
+                    }
+                )
             )
 
-        await asyncio.to_thread(work)
+        await run_blocking(work)
 
     async def list_logs(self, guild_id: str, limit: int = 80) -> list[dict[str, Any]]:
         def work() -> list[dict[str, Any]]:
@@ -616,17 +844,23 @@ class FirestoreStore:
             for doc in query.stream():
                 data = doc.to_dict() or {}
                 created = data.get("createdAt")
-                if hasattr(created, "isoformat"):
+                if created is not None and hasattr(created, "isoformat"):
                     data["createdAt"] = created.isoformat()
                 rows.append(data)
             return rows
 
-        return await asyncio.to_thread(work)
+        return await run_blocking(work)
 
     def _media_collection(self, guild_id: str) -> Any:
-        return self.client.collection("guilds").document(guild_id).collection("media_archive")
+        return (
+            self.client.collection("guilds")
+            .document(guild_id)
+            .collection("media_archive")
+        )
 
-    async def add_media_record(self, guild_id: str, record: dict[str, Any]) -> dict[str, Any]:
+    async def add_media_record(
+        self, guild_id: str, record: dict[str, Any]
+    ) -> dict[str, Any]:
         row = copy.deepcopy(record)
         record_id = str(row.get("recordId") or uuid4().hex)
         row["recordId"] = record_id
@@ -634,9 +868,11 @@ class FirestoreStore:
         def work() -> None:
             stored = copy.deepcopy(row)
             stored["createdAt"] = _server_timestamp()
-            self._media_collection(guild_id).document(record_id).set(stored, merge=False)
+            self._media_collection(guild_id).document(record_id).set(
+                stored, merge=False
+            )
 
-        await asyncio.to_thread(work)
+        await run_blocking(work)
         row.setdefault("createdAt", datetime.now(timezone.utc).isoformat())
         return row
 
@@ -651,7 +887,11 @@ class FirestoreStore:
         def work() -> list[dict[str, Any]]:
             # Filter in Python so installations do not need a custom Firestore
             # composite index for type/channel + createdAt combinations.
-            query = self._media_collection(guild_id).order_by("createdAt", direction="DESCENDING").limit(250)
+            query = (
+                self._media_collection(guild_id)
+                .order_by("createdAt", direction="DESCENDING")
+                .limit(250)
+            )
             rows: list[dict[str, Any]] = []
             for doc in query.stream():
                 data = doc.to_dict() or {}
@@ -661,16 +901,18 @@ class FirestoreStore:
                     continue
                 data.setdefault("recordId", doc.id)
                 created = data.get("createdAt")
-                if hasattr(created, "isoformat"):
+                if created is not None and hasattr(created, "isoformat"):
                     data["createdAt"] = created.isoformat()
                 rows.append(data)
                 if len(rows) >= max(1, min(limit, 250)):
                     break
             return rows
 
-        return await asyncio.to_thread(work)
+        return await run_blocking(work)
 
-    async def get_media_record(self, guild_id: str, record_id: str) -> dict[str, Any] | None:
+    async def get_media_record(
+        self, guild_id: str, record_id: str
+    ) -> dict[str, Any] | None:
         def work() -> dict[str, Any] | None:
             snap = self._media_collection(guild_id).document(record_id).get()
             if not snap.exists:
@@ -678,39 +920,59 @@ class FirestoreStore:
             data = snap.to_dict() or {}
             data.setdefault("recordId", snap.id)
             created = data.get("createdAt")
-            if hasattr(created, "isoformat"):
+            if created is not None and hasattr(created, "isoformat"):
                 data["createdAt"] = created.isoformat()
             return data
 
-        return await asyncio.to_thread(work)
+        return await run_blocking(work)
 
-    async def delete_media_record(self, guild_id: str, record_id: str) -> dict[str, Any] | None:
+    async def delete_media_record(
+        self, guild_id: str, record_id: str
+    ) -> dict[str, Any] | None:
         record = await self.get_media_record(guild_id, record_id)
         if record is None:
             return None
-        await asyncio.to_thread(self._media_collection(guild_id).document(record_id).delete)
+        await run_blocking(self._media_collection(guild_id).document(record_id).delete)
         return record
 
     async def media_stats(self, guild_id: str) -> dict[str, int]:
         def work() -> dict[str, int]:
-            files = images = videos = total_bytes = 0
-            for doc in self._media_collection(guild_id).stream():
-                data = doc.to_dict() or {}
-                files += 1
-                images += int(data.get("mediaType") == "image")
-                videos += int(data.get("mediaType") == "video")
-                total_bytes += int(data.get("size") or 0)
-            return {"files": files, "images": images, "videos": videos, "bytes": total_bytes}
+            from google.cloud.firestore_v1.base_query import FieldFilter
 
-        return await asyncio.to_thread(work)
+            collection = self._media_collection(guild_id)
+
+            def value(query: Any) -> int:
+                results = query.get()
+                return max(0, int(results[0][0].value or 0)) if results else 0
+
+            # Independent counts preserve records missing legacy size fields;
+            # SUM excludes missing fields. No archive documents are downloaded.
+            return {
+                "files": value(collection.count(alias="files")),
+                "images": value(
+                    collection.where(
+                        filter=FieldFilter("mediaType", "==", "image")
+                    ).count(alias="images")
+                ),
+                "videos": value(
+                    collection.where(
+                        filter=FieldFilter("mediaType", "==", "video")
+                    ).count(alias="videos")
+                ),
+                "bytes": value(collection.sum("size", alias="bytes")),
+            }
+
+        return await run_blocking(work)
 
 
 def merge_bot_config(update: dict[str, Any] | None) -> dict[str, Any]:
     update = copy.deepcopy(update or {})
     merged = deep_merge(copy.deepcopy(DEFAULT_BOT_CONFIG), update)
-    incoming_ai = update.get("ai") if isinstance(update.get("ai"), dict) else {}
+    incoming_ai = (update.get("ai") or {}) if isinstance(update.get("ai"), dict) else {}
     if "replyStyle" not in incoming_ai:
-        merged["ai"]["replyStyle"] = "embed" if merged["ai"].get("embedReplies", True) else "plain"
+        merged["ai"]["replyStyle"] = (
+            "embed" if merged["ai"].get("embedReplies", True) else "plain"
+        )
 
     # Persona profile v3 makes the voice less scripted and exposes granular
     # naturalness controls without overwriting an intentionally customized
@@ -730,11 +992,14 @@ def merge_bot_config(update: dict[str, Any] | None) -> dict[str, Any]:
             merged["ai"]["personality"] = AI_CONAN_BEST_FRIEND_PERSONALITY
 
         current_structure = str(incoming_ai.get("structureInstructions") or "").strip()
-        if not current_structure or (migrating_shipped_persona and current_structure == AI_V2_STRUCTURE_INSTRUCTIONS):
+        if not current_structure or (
+            migrating_shipped_persona
+            and current_structure == AI_V2_STRUCTURE_INSTRUCTIONS
+        ):
             merged["ai"]["structureInstructions"] = AI_CONAN_STRUCTURE_INSTRUCTIONS
 
         if migrating_shipped_persona:
-            shipped_style_defaults = {
+            shipped_style_defaults: dict[str, tuple[set[Any], Any]] = {
                 "responseLength": ({"balanced", "brief"}, "brief"),
                 "toneStyle": ({"adaptive", "casual", "natural"}, "natural"),
                 "emojiStyle": ({"occasional", "rare"}, "rare"),
@@ -788,7 +1053,9 @@ def merge_bot_config(update: dict[str, Any] | None) -> dict[str, Any]:
             if key not in incoming_ai:
                 merged["ai"][key] = default_value
         if "personaPreset" not in incoming_ai:
-            merged["ai"]["personaPreset"] = "public_conan" if migrating_shipped_persona else "custom"
+            merged["ai"]["personaPreset"] = (
+                "public_conan" if migrating_shipped_persona else "custom"
+            )
         if "catchphraseCooldownTurns" not in incoming_ai:
             merged["ai"]["catchphraseCooldownTurns"] = 10
 
@@ -799,14 +1066,28 @@ def merge_bot_config(update: dict[str, Any] | None) -> dict[str, Any]:
     # inherited Global defaults, which also forced narration/provider metadata
     # into the footer. Migrate only the shipped/default shape; custom game
     # profiles keep their existing inheritance and copy.
-    incoming_presentation = update.get("presentation") if isinstance(update.get("presentation"), dict) else {}
+    incoming_presentation = (
+        (update.get("presentation") or {})
+        if isinstance(update.get("presentation"), dict)
+        else {}
+    )
     try:
-        template_profile_version = int(incoming_presentation.get("messageTemplateProfileVersion") or 0)
+        template_profile_version = int(
+            incoming_presentation.get("messageTemplateProfileVersion") or 0
+        )
     except (TypeError, ValueError):
         template_profile_version = 0
     if template_profile_version < 2:
-        incoming_templates = update.get("messageTemplates") if isinstance(update.get("messageTemplates"), dict) else {}
-        incoming_game = incoming_templates.get("game") if isinstance(incoming_templates.get("game"), dict) else {}
+        incoming_templates = (
+            (update.get("messageTemplates") or {})
+            if isinstance(update.get("messageTemplates"), dict)
+            else {}
+        )
+        incoming_game = (
+            (incoming_templates.get("game") or {})
+            if isinstance(incoming_templates.get("game"), dict)
+            else {}
+        )
         shipped_game_fields = {
             "titleTemplate": "{title}",
             "descriptionTemplate": "{description}",
@@ -819,15 +1100,12 @@ def merge_bot_config(update: dict[str, Any] | None) -> dict[str, Any]:
             "showTimestamp": True,
             "showFields": True,
         }
-        game_is_shipped = (
-            not incoming_game
-            or (
-                "showProvider" not in incoming_game
-                and "showSourceNote" not in incoming_game
-                and all(
-                    key not in incoming_game or incoming_game.get(key) == value
-                    for key, value in shipped_game_fields.items()
-                )
+        game_is_shipped = not incoming_game or (
+            "showProvider" not in incoming_game
+            and "showSourceNote" not in incoming_game
+            and all(
+                key not in incoming_game or incoming_game.get(key) == value
+                for key, value in shipped_game_fields.items()
             )
         )
         if game_is_shipped:
@@ -846,19 +1124,39 @@ def merge_bot_config(update: dict[str, Any] | None) -> dict[str, Any]:
                 merged["messageTemplates"][game_template_key]["inheritGlobal"] = True
         merged["presentation"]["messageTemplateProfileVersion"] = 2
 
-    incoming_presence = update.get("presence") if isinstance(update.get("presence"), dict) else {}
-    presence = merged.get("presence") if isinstance(merged.get("presence"), dict) else {}
+    incoming_presence = (
+        (update.get("presence") or {})
+        if isinstance(update.get("presence"), dict)
+        else {}
+    )
+    presence = (
+        (merged.get("presence") or {})
+        if isinstance(merged.get("presence"), dict)
+        else {}
+    )
     allowed_statuses = {"online", "idle", "dnd", "invisible"}
-    allowed_activity_types = {"playing", "streaming", "listening", "watching", "competing"}
-    raw_entries = incoming_presence.get("entries") if "entries" in incoming_presence else None
+    allowed_activity_types = {
+        "playing",
+        "streaming",
+        "listening",
+        "watching",
+        "competing",
+    }
+    raw_entries = (
+        incoming_presence.get("entries") if "entries" in incoming_presence else None
+    )
     if raw_entries is None and incoming_presence:
-        raw_entries = [{
-            "enabled": True,
-            "status": presence.get("status", "online"),
-            "activityType": presence.get("activityType", "listening"),
-            "activityText": presence.get("activityText", "dramatic bridge sections"),
-            "streamUrl": presence.get("streamUrl", ""),
-        }]
+        raw_entries = [
+            {
+                "enabled": True,
+                "status": presence.get("status", "online"),
+                "activityType": presence.get("activityType", "listening"),
+                "activityText": presence.get(
+                    "activityText", "dramatic bridge sections"
+                ),
+                "streamUrl": presence.get("streamUrl", ""),
+            }
+        ]
     if raw_entries is None:
         raw_entries = presence.get("entries") or []
 
@@ -869,36 +1167,51 @@ def merge_bot_config(update: dict[str, Any] | None) -> dict[str, Any]:
                 continue
             status = str(raw_entry.get("status") or "online").lower()
             activity_type = str(raw_entry.get("activityType") or "listening").lower()
-            normalized_entries.append({
-                "enabled": bool(raw_entry.get("enabled", True)),
-                "status": status if status in allowed_statuses else "online",
-                "activityType": activity_type if activity_type in allowed_activity_types else "listening",
-                "activityText": str(raw_entry.get("activityText") or "").strip()[:128],
-                "streamUrl": str(raw_entry.get("streamUrl") or "").strip()[:500],
-            })
+            normalized_entries.append(
+                {
+                    "enabled": bool(raw_entry.get("enabled", True)),
+                    "status": status if status in allowed_statuses else "online",
+                    "activityType": activity_type
+                    if activity_type in allowed_activity_types
+                    else "listening",
+                    "activityText": str(raw_entry.get("activityText") or "").strip()[
+                        :128
+                    ],
+                    "streamUrl": str(raw_entry.get("streamUrl") or "").strip()[:500],
+                }
+            )
     if not normalized_entries:
-        normalized_entries = [{
-            "enabled": True,
-            "status": "online",
-            "activityType": "listening",
-            "activityText": "dramatic bridge sections",
-            "streamUrl": "",
-        }]
+        normalized_entries = [
+            {
+                "enabled": True,
+                "status": "online",
+                "activityType": "listening",
+                "activityText": "dramatic bridge sections",
+                "streamUrl": "",
+            }
+        ]
     presence["entries"] = normalized_entries
     presence["rotationEnabled"] = bool(presence.get("rotationEnabled", False))
     try:
-        presence["intervalSeconds"] = max(15, min(86400, int(presence.get("intervalSeconds") or 60)))
+        presence["intervalSeconds"] = max(
+            15, min(86400, int(presence.get("intervalSeconds") or 60))
+        )
     except (TypeError, ValueError):
         presence["intervalSeconds"] = 60
-    first_enabled = next((entry for entry in normalized_entries if entry.get("enabled")), normalized_entries[0])
+    first_enabled = next(
+        (entry for entry in normalized_entries if entry.get("enabled")),
+        normalized_entries[0],
+    )
     presence["status"] = first_enabled["status"]
     presence["activityType"] = first_enabled["activityType"]
     presence["activityText"] = first_enabled["activityText"]
     presence["streamUrl"] = first_enabled["streamUrl"]
     merged["presence"] = presence
 
-    incoming_media = update.get("media") if isinstance(update.get("media"), dict) else {}
-    media = merged.get("media") if isinstance(merged.get("media"), dict) else {}
+    incoming_media = (
+        (update.get("media") or {}) if isinstance(update.get("media"), dict) else {}
+    )
+    media = (merged.get("media") or {}) if isinstance(merged.get("media"), dict) else {}
     # Version 2 restores the original Discord delivery layout for videos:
     # a native attachment/player followed by the configured feedback embed.
     # Configurations saved by the temporary Components V2 release did not carry
@@ -910,14 +1223,23 @@ def merge_bot_config(update: dict[str, Any] | None) -> dict[str, Any]:
         media_mode_version = 0
     if media_mode_version < 2:
         media["videoDisplayMode"] = "embed_attachment"
-    if str(media.get("videoDisplayMode") or "") not in {"embed_attachment", "inline_card"}:
+    if str(media.get("videoDisplayMode") or "") not in {
+        "embed_attachment",
+        "inline_card",
+    }:
         media["videoDisplayMode"] = "embed_attachment"
     media["videoDisplayModeVersion"] = 2
     merged["media"] = media
 
-    incoming_games = update.get("games") if isinstance(update.get("games"), dict) else {}
+    incoming_games = (
+        (update.get("games") or {}) if isinstance(update.get("games"), dict) else {}
+    )
     if "guessSongRounds" not in incoming_games and "guessSongHints" in incoming_games:
-        legacy_hints = [str(item).strip() for item in incoming_games.get("guessSongHints") or [] if str(item).strip()]
+        legacy_hints = [
+            str(item).strip()
+            for item in incoming_games.get("guessSongHints") or []
+            if str(item).strip()
+        ]
         legacy_answers = ["Heather", "Maniac", "People Watching"]
         migrated = [
             f"{legacy_answers[index]} | | {hint}"
@@ -961,7 +1283,9 @@ def merge_bot_config(update: dict[str, Any] | None) -> dict[str, Any]:
                 rounds.append(catalog_row)
                 continue
             existing_row = rounds[existing_index]
-            if isinstance(existing_row, str) and existing_row.strip() in previous_defaults.get(key, set()):
+            if isinstance(
+                existing_row, str
+            ) and existing_row.strip() in previous_defaults.get(key, set()):
                 rounds[existing_index] = catalog_row
 
         merged["games"]["guessSongRounds"] = rounds
@@ -1024,6 +1348,13 @@ def create_store() -> MemoryStore | FirestoreStore:
         from firebase_admin import credentials, firestore
 
         service_account = _load_service_account()
+        if not service_account and get_settings().environment == "production":
+            if not firebase_admin._apps:
+                firebase_admin.initialize_app(
+                    credentials.ApplicationDefault(),
+                    {"projectId": get_settings().firebase_project_id},
+                )
+            return FirestoreStore(firestore.client())
         if not service_account:
             log.warning("Firebase credentials not configured; using in-memory store.")
             return MemoryStore()
@@ -1034,5 +1365,7 @@ def create_store() -> MemoryStore | FirestoreStore:
         log.info("Firebase initialized successfully.")
         return FirestoreStore(firestore.client())
     except Exception:
+        if get_settings().environment == "production":
+            raise RuntimeError("Persistent storage initialization failed") from None
         log.exception("Firebase initialization failed; using in-memory store.")
         return MemoryStore()

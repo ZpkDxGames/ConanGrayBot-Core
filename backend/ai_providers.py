@@ -4,11 +4,16 @@ import asyncio
 import logging
 import re
 import time
+from contextvars import ContextVar
+from dataclasses import replace
 from typing import Any
 
 import aiohttp
 
 from .config import get_settings
+from .http import pooled_session
+from .prompts import bounded_messages
+from .providers import manager
 
 log = logging.getLogger("conan.ai")
 
@@ -90,17 +95,75 @@ _DEFAULT_AVOID_PHRASES = (
     "i'm here for you",
 )
 _LOW_ENERGY_PHRASES = {
-    "", "...", "nothing", "nothing actually", "idk", "idek", "i don't know", "dont know",
-    "uhm", "um", "umm", "uhuhm", "hmm", "hm", "mhm", "mm", "k", "ok", "okay",
-    "sure", "maybe", "fine", "nah", "nope", "yeah", "yea", "yep", "lol", "lmao", "real",
+    "",
+    "...",
+    "nothing",
+    "nothing actually",
+    "idk",
+    "idek",
+    "i don't know",
+    "dont know",
+    "uhm",
+    "um",
+    "umm",
+    "uhuhm",
+    "hmm",
+    "hm",
+    "mhm",
+    "mm",
+    "k",
+    "ok",
+    "okay",
+    "sure",
+    "maybe",
+    "fine",
+    "nah",
+    "nope",
+    "yeah",
+    "yea",
+    "yep",
+    "lol",
+    "lmao",
+    "real",
 }
 _LOW_ENERGY_WORDS = {
-    "nothing", "actually", "idk", "idek", "uhm", "um", "umm", "uhuhm", "hmm", "hm", "mhm",
-    "mm", "k", "ok", "okay", "sure", "maybe", "fine", "nah", "nope", "yeah", "yea", "yep",
-    "lol", "lmao", "real", "whatever", "anyway",
+    "nothing",
+    "actually",
+    "idk",
+    "idek",
+    "uhm",
+    "um",
+    "umm",
+    "uhuhm",
+    "hmm",
+    "hm",
+    "mhm",
+    "mm",
+    "k",
+    "ok",
+    "okay",
+    "sure",
+    "maybe",
+    "fine",
+    "nah",
+    "nope",
+    "yeah",
+    "yea",
+    "yep",
+    "lol",
+    "lmao",
+    "real",
+    "whatever",
+    "anyway",
 }
 _ALLOWED_PERSONA_EMOJIS = {"💀", "😭"}
-_LOW_ENERGY_OVERREACH = ("quiet day", "silence says", "conversation starter", "spill the tea", "anything on your mind")
+_LOW_ENERGY_OVERREACH = (
+    "quiet day",
+    "silence says",
+    "conversation starter",
+    "spill the tea",
+    "anything on your mind",
+)
 
 
 def _current_message_text(user_text: str) -> str:
@@ -123,26 +186,47 @@ def _is_low_energy_message(user_text: str) -> bool:
     if normalized in _LOW_ENERGY_PHRASES:
         return True
     words = normalized.split()
-    return bool(words) and len(words) <= 3 and all(word in _LOW_ENERGY_WORDS for word in words)
+    return (
+        bool(words)
+        and len(words) <= 3
+        and all(word in _LOW_ENERGY_WORDS for word in words)
+    )
 
 
-def _recent_assistant_messages(history: list[dict[str, str]], limit: int = 8) -> list[str]:
+def _recent_assistant_messages(
+    history: list[dict[str, str]], limit: int = 8
+) -> list[str]:
     messages = [
         str(item.get("content") or "").strip()
         for item in history
-        if str(item.get("role") or "").lower() == "assistant" and str(item.get("content") or "").strip()
+        if str(item.get("role") or "").lower() == "assistant"
+        and str(item.get("content") or "").strip()
     ]
-    return messages[-max(1, limit):]
+    return messages[-max(1, limit) :]
 
 
-def _clamped_int(ai_config: dict[str, Any], key: str, default: int, minimum: int = 0, maximum: int = 100) -> int:
+def _clamped_int(
+    ai_config: dict[str, Any],
+    key: str,
+    default: int,
+    minimum: int = 0,
+    maximum: int = 100,
+) -> int:
     try:
-        return max(minimum, min(int(ai_config.get(key) if ai_config.get(key) is not None else default), maximum))
+        return max(
+            minimum,
+            min(
+                int(ai_config.get(key, default) or 0),
+                maximum,
+            ),
+        )
     except (TypeError, ValueError):
         return default
 
 
-def _list_setting(ai_config: dict[str, Any], key: str, default: tuple[str, ...]) -> list[str]:
+def _list_setting(
+    ai_config: dict[str, Any], key: str, default: tuple[str, ...]
+) -> list[str]:
     raw = ai_config.get(key)
     if isinstance(raw, str):
         values = re.split(r"[\r\n]+", raw)
@@ -214,7 +298,9 @@ def _recent_style_guard(
             if opening:
                 openings.append(opening)
         if openings:
-            rules.append("- Avoid echoing these recent openings: " + " | ".join(openings) + ".")
+            rules.append(
+                "- Avoid echoing these recent openings: " + " | ".join(openings) + "."
+            )
     if _is_low_energy_message(user_text):
         low_energy_style = str(ai_config.get("lowEnergyStyle") or "mirror")
         style_rule = {
@@ -222,11 +308,13 @@ def _recent_style_guard(
             "gentle": "Answer softly and briefly without pressing for more.",
             "playful": "Use one small dry reaction, but do not start a whole new bit.",
         }.get(low_energy_style, "Mirror the low energy with one tiny acknowledgment.")
-        rules.extend([
-            "- The current message is low-energy, hesitant, or emoji-only.",
-            f"- {style_rule}",
-            "- Do not ask a question, introduce a new topic, give advice, philosophize about silence, or force a callback.",
-        ])
+        rules.extend(
+            [
+                "- The current message is low-energy, hesitant, or emoji-only.",
+                f"- {style_rule}",
+                "- Do not ask a question, introduce a new topic, give advice, philosophize about silence, or force a callback.",
+            ]
+        )
     return "\n".join(rules)
 
 
@@ -275,7 +363,9 @@ def _natural_truncate(text: str, limit: int) -> str:
 
 
 def _sentence_pieces(text: str) -> list[str]:
-    return [piece.strip() for piece in re.split(r"(?<=[.!?])\s+|\n+", text) if piece.strip()]
+    return [
+        piece.strip() for piece in re.split(r"(?<=[.!?])\s+|\n+", text) if piece.strip()
+    ]
 
 
 def _strip_sentences_with_phrases(text: str, phrases: list[str]) -> str:
@@ -283,7 +373,11 @@ def _strip_sentences_with_phrases(text: str, phrases: list[str]) -> str:
     if not lowered_phrases:
         return text
     pieces = _sentence_pieces(text)
-    kept = [piece for piece in pieces if not any(phrase in piece.lower() for phrase in lowered_phrases)]
+    kept = [
+        piece
+        for piece in pieces
+        if not any(phrase in piece.lower() for phrase in lowered_phrases)
+    ]
     return " ".join(kept).strip() if len(kept) != len(pieces) else text
 
 
@@ -294,12 +388,19 @@ def _remove_recent_recurring_bits(
     bits: list[str],
 ) -> str:
     recent_lower = "\n".join(_recent_assistant_messages(history, cooldown)).lower()
-    blocked = [bit for bit in bits if bit.lower() in recent_lower and bit.lower() in text.lower()]
+    blocked = [
+        bit
+        for bit in bits
+        if bit.lower() in recent_lower and bit.lower() in text.lower()
+    ]
     return _strip_sentences_with_phrases(text, blocked) if blocked else text
 
 
-def _fallback_persona_line(history: list[dict[str, str]], user_text: str, *, low_energy: bool) -> str:
+def _fallback_persona_line(
+    history: list[dict[str, str]], user_text: str, *, low_energy: bool
+) -> str:
     current = _current_message_text(user_text).strip().lower()
+    candidates: tuple[str, ...]
     if low_energy:
         if any(mark in current for mark in ("😭", "💀")):
             candidates = ("😭", "literally", "yeah that's fair", "real")
@@ -308,7 +409,14 @@ def _fallback_persona_line(history: list[dict[str, str]], user_text: str, *, low
         elif current.startswith(("yeah", "mhm", "mm", "uh")):
             candidates = ("mhm", "yeah", "real", "fair enough")
         else:
-            candidates = ("yeah. fair enough", "mhm", "real", "gotcha", "honestly valid", "okay yeah")
+            candidates = (
+                "yeah. fair enough",
+                "mhm",
+                "real",
+                "gotcha",
+                "honestly valid",
+                "okay yeah",
+            )
     else:
         candidates = (
             "yeah that's fair",
@@ -321,7 +429,10 @@ def _fallback_persona_line(history: list[dict[str, str]], user_text: str, *, low
             "unfortunately real",
         )
     recent = "\n".join(_recent_assistant_messages(history, 8)).lower()
-    return next((candidate for candidate in candidates if candidate.lower() not in recent), candidates[0])
+    return next(
+        (candidate for candidate in candidates if candidate.lower() not in recent),
+        candidates[0],
+    )
 
 
 def _limit_questions(text: str, maximum: int) -> str:
@@ -352,12 +463,16 @@ def _shape_persona_output(
 
     if strict:
         cooldown = _clamped_int(ai_config, "catchphraseCooldownTurns", 10, 1, 30)
-        shaped = _remove_recent_recurring_bits(shaped, history, cooldown, _recurring_bits(ai_config))
+        shaped = _remove_recent_recurring_bits(
+            shaped, history, cooldown, _recurring_bits(ai_config)
+        )
         if bool(ai_config.get("avoidAssistantLanguage", True)):
             shaped = _strip_sentences_with_phrases(shaped, _avoid_phrases(ai_config))
 
         emoji_style = str(ai_config.get("emojiStyle") or "rare")
-        emoji_limit = {"none": 0, "rare": 1, "occasional": 1, "frequent": 2}.get(emoji_style, 1)
+        emoji_limit = {"none": 0, "rare": 1, "occasional": 1, "frequent": 2}.get(
+            emoji_style, 1
+        )
         shaped = _filter_persona_emojis(shaped, max_allowed=emoji_limit)
         shaped = re.sub(r"!{2,}", "!", shaped)
         shaped = re.sub(r"\?{3,}", "??", shaped)
@@ -390,7 +505,9 @@ def _shape_persona_output(
     return shaped
 
 
-def _intensity_instruction(label: str, value: int, low: str, medium: str, high: str) -> str:
+def _intensity_instruction(
+    label: str, value: int, low: str, medium: str, high: str
+) -> str:
     if value <= 25:
         detail = low
     elif value <= 70:
@@ -459,10 +576,14 @@ def _behavior_preferences(ai_config: dict[str, Any]) -> str:
     slang = _clamped_int(ai_config, "slangLevel", 28)
 
     parts = [
-        length_map.get(str(ai_config.get("responseLength") or "brief"), length_map["brief"]),
+        length_map.get(
+            str(ai_config.get("responseLength") or "brief"), length_map["brief"]
+        ),
         tone_map.get(str(ai_config.get("toneStyle") or "natural"), tone_map["natural"]),
         emoji_map.get(str(ai_config.get("emojiStyle") or "rare"), emoji_map["rare"]),
-        markdown_map.get(str(ai_config.get("markdownStyle") or "none"), markdown_map["none"]),
+        markdown_map.get(
+            str(ai_config.get("markdownStyle") or "none"), markdown_map["none"]
+        ),
         _intensity_instruction(
             "Naturalness",
             naturalness,
@@ -521,22 +642,42 @@ def _behavior_preferences(ai_config: dict[str, Any]) -> str:
         ),
         f"Question tendency ({questions}/100): do not ask questions by habit; this setting is intentionally {'low' if questions <= 30 else 'moderate' if questions <= 65 else 'high'}.",
         f"Conversation initiative ({initiative}/100): {'do not introduce new topics unless clearly invited' if initiative <= 30 else 'occasionally introduce a related thought when the room has energy' if initiative <= 65 else 'you may more actively move the conversation forward, without hijacking it'}.",
-        low_energy_map.get(str(ai_config.get("lowEnergyStyle") or "mirror"), low_energy_map["mirror"]),
-        comfort_map.get(str(ai_config.get("comfortStyle") or "soft_specific"), comfort_map["soft_specific"]),
-        unknown_map.get(str(ai_config.get("unknownStyle") or "honest_funny"), unknown_map["honest_funny"]),
-        affection_map.get(str(ai_config.get("affectionStyle") or "subtle"), affection_map["subtle"]),
+        low_energy_map.get(
+            str(ai_config.get("lowEnergyStyle") or "mirror"), low_energy_map["mirror"]
+        ),
+        comfort_map.get(
+            str(ai_config.get("comfortStyle") or "soft_specific"),
+            comfort_map["soft_specific"],
+        ),
+        unknown_map.get(
+            str(ai_config.get("unknownStyle") or "honest_funny"),
+            unknown_map["honest_funny"],
+        ),
+        affection_map.get(
+            str(ai_config.get("affectionStyle") or "subtle"), affection_map["subtle"]
+        ),
     ]
 
     if bool(ai_config.get("allowSentenceFragments", True)):
-        parts.append("Sentence fragments and imperfect conversational beats are welcome when they sound natural.")
+        parts.append(
+            "Sentence fragments and imperfect conversational beats are welcome when they sound natural."
+        )
     if bool(ai_config.get("allowSelfDeprecation", True)):
-        parts.append("Occasional self-deprecating humor is allowed, but do not make every response about yourself.")
+        parts.append(
+            "Occasional self-deprecating humor is allowed, but do not make every response about yourself."
+        )
     avoid = _avoid_phrases(ai_config)
     if avoid:
-        parts.append("Avoid these canned phrases or close paraphrases: " + "; ".join(avoid) + ".")
+        parts.append(
+            "Avoid these canned phrases or close paraphrases: " + "; ".join(avoid) + "."
+        )
     bits = _recurring_bits(ai_config)
     if bits:
-        parts.append("Optional recurring callbacks, used only when relevant and never as signatures: " + "; ".join(bits) + ".")
+        parts.append(
+            "Optional recurring callbacks, used only when relevant and never as signatures: "
+            + "; ".join(bits)
+            + "."
+        )
     examples = _style_examples(ai_config)
     if examples:
         labels = {
@@ -581,10 +722,14 @@ def _discord_to_ai_messages(
     ai_config: dict[str, Any],
     conversation_context: str | None = None,
 ) -> list[dict[str, str]]:
-    messages = [{
-        "role": "system",
-        "content": _build_system_prompt(personality, ai_config, conversation_context, history, user_text),
-    }]
+    messages = [
+        {
+            "role": "system",
+            "content": _build_system_prompt(
+                personality, ai_config, conversation_context, history, user_text
+            ),
+        }
+    ]
     for item in history:
         role = item.get("role", "user")
         if role not in {"user", "assistant", "system"}:
@@ -632,9 +777,15 @@ def _clean_model_output(raw: Any, provider: str) -> str:
 
     # Some reasoning or safety-tuned models leak hidden blocks into the normal
     # content field. Remove them before anything can be sent to Discord.
-    text = re.sub(r"<think\b[^>]*>.*?</think>", "", text, flags=re.IGNORECASE | re.DOTALL)
-    text = re.sub(r"<analysis\b[^>]*>.*?</analysis>", "", text, flags=re.IGNORECASE | re.DOTALL)
-    text = re.sub(r"<reasoning\b[^>]*>.*?</reasoning>", "", text, flags=re.IGNORECASE | re.DOTALL)
+    text = re.sub(
+        r"<think\b[^>]*>.*?</think>", "", text, flags=re.IGNORECASE | re.DOTALL
+    )
+    text = re.sub(
+        r"<analysis\b[^>]*>.*?</analysis>", "", text, flags=re.IGNORECASE | re.DOTALL
+    )
+    text = re.sub(
+        r"<reasoning\b[^>]*>.*?</reasoning>", "", text, flags=re.IGNORECASE | re.DOTALL
+    )
     text = text.strip()
 
     if text.startswith("```") and text.endswith("```"):
@@ -642,9 +793,17 @@ def _clean_model_output(raw: Any, provider: str) -> str:
         if len(lines) >= 3:
             text = "\n".join(lines[1:-1]).strip()
 
-    cleaned_lines = [line for line in text.splitlines() if not _INTERNAL_META_LINE.match(line)]
+    cleaned_lines = [
+        line for line in text.splitlines() if not _INTERNAL_META_LINE.match(line)
+    ]
     text = "\n".join(cleaned_lines).strip()
-    text = re.sub(r"^\s*(?:assistant|answer|response)\s*:\s*", "", text, count=1, flags=re.IGNORECASE).strip()
+    text = re.sub(
+        r"^\s*(?:assistant|answer|response)\s*:\s*",
+        "",
+        text,
+        count=1,
+        flags=re.IGNORECASE,
+    ).strip()
 
     if not text or _ONLY_META_RESPONSE.fullmatch(text):
         raise AIProviderError(f"{provider} returned only internal safety metadata")
@@ -661,9 +820,13 @@ def _normalize_provider_order(value: Any) -> list[str]:
     return order or ["gemini", "openrouter", "groq"]
 
 
-def _is_blocked_openrouter_model(model_id: str, extra_parts: tuple[str, ...] = ()) -> bool:
+def _is_blocked_openrouter_model(
+    model_id: str, extra_parts: tuple[str, ...] = ()
+) -> bool:
     normalized = str(model_id or "").strip().lower()
-    blocked = _OPENROUTER_BLOCKED_MODEL_PARTS + tuple(part.lower() for part in extra_parts if part)
+    blocked = _OPENROUTER_BLOCKED_MODEL_PARTS + tuple(
+        part.lower() for part in extra_parts if part
+    )
     return not normalized or any(part in normalized for part in blocked)
 
 
@@ -675,19 +838,36 @@ def _is_free_openrouter_model(row: dict[str, Any]) -> bool:
     model_id = str(row.get("id") or "")
     if model_id.endswith(":free"):
         return True
-    pricing = row.get("pricing") if isinstance(row.get("pricing"), dict) else {}
+    pricing = (row.get("pricing") or {}) if isinstance(row.get("pricing"), dict) else {}
     if not pricing or not all(key in pricing for key in ("prompt", "completion")):
         return False
     try:
-        return all(float(pricing.get(key) or 0) == 0 for key in ("prompt", "completion", "request"))
+        return all(
+            float(pricing.get(key) or 0) == 0
+            for key in ("prompt", "completion", "request")
+        )
     except (TypeError, ValueError):
         return False
 
 
 def _openrouter_model_rank(row: dict[str, Any]) -> tuple[int, int, int, str]:
     model_id = str(row.get("id") or "").lower()
-    author_rank = next((index for index, prefix in enumerate(_OPENROUTER_PREFERRED_AUTHORS) if model_id.startswith(prefix)), 99)
-    chat_rank = 0 if any(token in model_id for token in ("instruct", "chat", "gemma", "gpt-oss", "maverick")) else 1
+    author_rank = next(
+        (
+            index
+            for index, prefix in enumerate(_OPENROUTER_PREFERRED_AUTHORS)
+            if model_id.startswith(prefix)
+        ),
+        99,
+    )
+    chat_rank = (
+        0
+        if any(
+            token in model_id
+            for token in ("instruct", "chat", "gemma", "gpt-oss", "maverick")
+        )
+        else 1
+    )
     try:
         context_rank = -int(row.get("context_length") or 0)
     except (TypeError, ValueError):
@@ -695,7 +875,9 @@ def _openrouter_model_rank(row: dict[str, Any]) -> tuple[int, int, int, str]:
     return author_rank, chat_rank, context_rank, model_id
 
 
-async def _discover_openrouter_models(*, free_only: bool, blocked_parts: tuple[str, ...]) -> list[str]:
+async def _discover_openrouter_models(
+    *, free_only: bool, blocked_parts: tuple[str, ...]
+) -> list[str]:
     now = time.monotonic()
     cached = _OPENROUTER_MODEL_CACHE.get("models") or []
     if cached and now < float(_OPENROUTER_MODEL_CACHE.get("expires") or 0):
@@ -712,15 +894,24 @@ async def _discover_openrouter_models(*, free_only: bool, blocked_parts: tuple[s
                 params = {"output_modalities": "text", "sort": "throughput-high-to-low"}
                 if free_only:
                     params["max_price"] = "0"
-                timeout = aiohttp.ClientTimeout(total=8)
-                async with aiohttp.ClientSession(timeout=timeout) as session:
-                    async with session.get("https://openrouter.ai/api/v1/models", headers=headers, params=params) as resp:
+                async with pooled_session() as session:
+                    async with session.get(
+                        "https://openrouter.ai/api/v1/models",
+                        headers=headers,
+                        params=params,
+                    ) as resp:
                         data = await resp.json(content_type=None)
                         if resp.status >= 400:
-                            raise AIProviderError(f"OpenRouter model catalog HTTP {resp.status}: {str(data)[:220]}")
-                        rows = data.get("data") if isinstance(data, dict) else []
+                            raise AIProviderError(
+                                f"OpenRouter model catalog HTTP {resp.status}"
+                            )
+                        rows = (
+                            (data.get("data") or []) if isinstance(data, dict) else []
+                        )
                         if not isinstance(rows, list):
-                            raise AIProviderError("OpenRouter model catalog returned an invalid response")
+                            raise AIProviderError(
+                                "OpenRouter model catalog returned an invalid response"
+                            )
                 _OPENROUTER_MODEL_CACHE["models"] = rows
                 _OPENROUTER_MODEL_CACHE["expires"] = time.monotonic() + 1200
 
@@ -730,7 +921,9 @@ async def _discover_openrouter_models(*, free_only: bool, blocked_parts: tuple[s
             continue
         model_id = str(row.get("id") or "").strip()
         lowered = model_id.lower()
-        if _is_openrouter_meta_router(model_id) or _is_blocked_openrouter_model(model_id, blocked_parts):
+        if _is_openrouter_meta_router(model_id) or _is_blocked_openrouter_model(
+            model_id, blocked_parts
+        ):
             continue
         if any(part in lowered for part in _OPENROUTER_BAD_CHAT_MODEL_PARTS):
             continue
@@ -754,37 +947,55 @@ def _dedupe(items: list[str]) -> list[str]:
 
 
 async def _openrouter_candidates() -> list[str]:
-    settings = get_settings()
-    configured = list(settings.openrouter_models or [])
+    settings = provider_settings()
+    configured = (
+        []
+        if _model_selection.get().get("openrouter")
+        else list(settings.openrouter_models or [])
+    )
     if settings.openrouter_model:
         configured.insert(0, settings.openrouter_model)
     configured = _dedupe(configured)
 
     blocked_parts = tuple(settings.openrouter_blocked_model_fragments or ())
-    free_only = not configured or any(_is_openrouter_meta_router(model) or model.endswith(":free") for model in configured)
+    free_only = not configured or any(
+        _is_openrouter_meta_router(model) or model.endswith(":free")
+        for model in configured
+    )
     explicit_safe = [
         model
         for model in configured
-        if not _is_openrouter_meta_router(model) and not _is_blocked_openrouter_model(model, blocked_parts)
+        if not _is_openrouter_meta_router(model)
+        and not _is_blocked_openrouter_model(model, blocked_parts)
     ]
-    rejected = [model for model in configured if model not in explicit_safe and not _is_openrouter_meta_router(model)]
+    rejected = [
+        model
+        for model in configured
+        if model not in explicit_safe and not _is_openrouter_meta_router(model)
+    ]
     for model in rejected:
         log.warning("Ignoring blocked OpenRouter model configuration: %s", model)
 
+    if not settings.openrouter_discovery_enabled:
+        return explicit_safe[:6]
     discovered: list[str] = []
     try:
-        discovered = await _discover_openrouter_models(free_only=free_only, blocked_parts=blocked_parts)
+        discovered = await _discover_openrouter_models(
+            free_only=free_only, blocked_parts=blocked_parts
+        )
     except Exception as exc:
         log.warning("Could not refresh the OpenRouter safe-model catalog: %s", exc)
 
     static_fallbacks = [
-        model for model in _OPENROUTER_STATIC_SAFE_FALLBACKS if not _is_blocked_openrouter_model(model, blocked_parts)
+        model
+        for model in _OPENROUTER_STATIC_SAFE_FALLBACKS
+        if not _is_blocked_openrouter_model(model, blocked_parts)
     ]
     candidates = _dedupe(explicit_safe + discovered + static_fallbacks)
     return candidates[:6]
 
 
-async def ask_ai(
+async def _ask_ai(
     config: dict[str, Any],
     history: list[dict[str, str]],
     user_text: str,
@@ -792,14 +1003,34 @@ async def ask_ai(
 ) -> tuple[str, str]:
     settings = get_settings()
     ai_config = config.get("ai", {})
-    personality = ai_config.get("personality") or "You are a helpful, funny Discord bot."
+    personality = (
+        ai_config.get("personality") or "You are a helpful, funny Discord bot."
+    )
     provider_order = _normalize_provider_order(ai_config.get("providerOrder"))
     max_tokens = max(32, min(int(ai_config.get("maxOutputTokens") or 650), 4096))
-    temperature = max(0.0, min(float(ai_config.get("temperature") if ai_config.get("temperature") is not None else 0.8), 2.0))
-    messages = _discord_to_ai_messages(personality, history, user_text, ai_config, conversation_context)
+    temperature = max(
+        0.0,
+        min(
+            float(
+                ai_config.get("temperature")
+                if ai_config.get("temperature") is not None
+                else 0.8
+            ),
+            2.0,
+        ),
+    )
+    messages = _discord_to_ai_messages(
+        personality, history, user_text, ai_config, conversation_context
+    )
 
+    messages = bounded_messages(
+        messages, int(ai_config.get("maxPromptCharacters") or 24000)
+    )
     errors: list[str] = []
     for provider in provider_order:
+        if not manager.available(provider):
+            continue
+        started = time.monotonic()
         try:
             answer = ""
             if provider == "gemini" and settings.gemini_api_key:
@@ -809,10 +1040,14 @@ async def ask_ai(
             elif provider == "groq" and settings.groq_api_key:
                 answer = await _ask_groq(messages, max_tokens, temperature)
             if answer:
-                return _shape_persona_output(answer, ai_config, history, user_text), provider
+                manager.success(provider, started)
+                return _shape_persona_output(
+                    answer, ai_config, history, user_text
+                ), provider
         except Exception as exc:
-            log.warning("%s provider failed: %s", provider, exc)
-            errors.append(f"{provider}: {exc}")
+            manager.failure(provider)
+            log.warning("%s provider failed (%s)", provider, type(exc).__name__)
+            errors.append(f"{provider}: unavailable")
 
     configured = [
         name
@@ -828,8 +1063,10 @@ async def ask_ai(
     raise AIProviderError("All AI providers failed. " + " | ".join(errors[-3:]))
 
 
-async def _ask_gemini(messages: list[dict[str, str]], max_tokens: int, temperature: float) -> str:
-    settings = get_settings()
+async def _ask_gemini(
+    messages: list[dict[str, str]], max_tokens: int, temperature: float
+) -> str:
+    settings = provider_settings()
     system_parts = []
     contents = []
     for item in messages:
@@ -847,28 +1084,34 @@ async def _ask_gemini(messages: list[dict[str, str]], max_tokens: int, temperatu
         payload["systemInstruction"] = {"parts": system_parts}
 
     url = f"https://generativelanguage.googleapis.com/v1beta/models/{settings.gemini_model}:generateContent"
-    async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=42)) as session:
-        async with session.post(url, params={"key": settings.gemini_api_key}, json=payload) as resp:
+    async with pooled_session() as session:
+        async with session.post(
+            url, params={"key": settings.gemini_api_key}, json=payload
+        ) as resp:
             data = await resp.json(content_type=None)
             if resp.status >= 400:
-                raise AIProviderError(f"Gemini HTTP {resp.status}: {str(data)[:240]}")
+                raise AIProviderError(f"Gemini HTTP {resp.status}")
             try:
                 candidate = data["candidates"][0]
                 parts = candidate["content"]["parts"]
                 text_parts = [
                     str(part.get("text") or "")
                     for part in parts
-                    if isinstance(part, dict) and not part.get("thought") and part.get("text")
+                    if isinstance(part, dict)
+                    and not part.get("thought")
+                    and part.get("text")
                 ]
                 return _clean_model_output("\n".join(text_parts), "Gemini")
             except AIProviderError:
                 raise
             except Exception as exc:
-                raise AIProviderError(f"Gemini malformed response: {str(data)[:240]}") from exc
+                raise AIProviderError("Gemini malformed response") from exc
 
 
-async def _ask_openrouter(messages: list[dict[str, str]], max_tokens: int, temperature: float) -> str:
-    settings = get_settings()
+async def _ask_openrouter(
+    messages: list[dict[str, str]], max_tokens: int, temperature: float
+) -> str:
+    settings = provider_settings()
     headers = {
         "Authorization": f"Bearer {settings.openrouter_api_key}",
         "Content-Type": "application/json",
@@ -878,16 +1121,23 @@ async def _ask_openrouter(messages: list[dict[str, str]], max_tokens: int, tempe
     if settings.openrouter_app_name:
         headers["X-Title"] = settings.openrouter_app_name
 
-    ignored_providers = _dedupe(list(settings.openrouter_ignored_providers or _OPENROUTER_DEFAULT_IGNORED_PROVIDERS))
+    ignored_providers = _dedupe(
+        list(
+            settings.openrouter_ignored_providers
+            or _OPENROUTER_DEFAULT_IGNORED_PROVIDERS
+        )
+    )
     blocked_parts = tuple(settings.openrouter_blocked_model_fragments or ())
     candidates = await _openrouter_candidates()
     if not candidates:
-        raise AIProviderError("OpenRouter has no allowed models after excluding Qwen and NVIDIA")
+        raise AIProviderError(
+            "OpenRouter has no allowed models after excluding Qwen and NVIDIA"
+        )
 
     errors: list[str] = []
     loop = asyncio.get_running_loop()
     deadline = loop.time() + 50.0
-    async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=None)) as session:
+    async with pooled_session() as session:
         for model in candidates:
             if _is_blocked_openrouter_model(model, blocked_parts):
                 continue
@@ -907,7 +1157,9 @@ async def _ask_openrouter(messages: list[dict[str, str]], max_tokens: int, tempe
                 },
             }
             try:
-                request_timeout = aiohttp.ClientTimeout(total=max(2.0, min(20.0, remaining)))
+                request_timeout = aiohttp.ClientTimeout(
+                    total=max(2.0, min(20.0, remaining))
+                )
                 async with session.post(
                     "https://openrouter.ai/api/v1/chat/completions",
                     headers=headers,
@@ -916,7 +1168,7 @@ async def _ask_openrouter(messages: list[dict[str, str]], max_tokens: int, tempe
                 ) as resp:
                     data = await resp.json(content_type=None)
                     if resp.status >= 400:
-                        errors.append(f"{model}: HTTP {resp.status} {str(data)[:150]}")
+                        errors.append(f"{model}: HTTP {resp.status}")
                         continue
                     used_model = str(data.get("model") or model)
                     if _is_blocked_openrouter_model(used_model, blocked_parts):
@@ -928,11 +1180,15 @@ async def _ask_openrouter(messages: list[dict[str, str]], max_tokens: int, tempe
                         errors.append(f"{model}: malformed response")
                         continue
                     try:
-                        answer = _clean_model_output(raw_content, f"OpenRouter/{used_model}")
+                        answer = _clean_model_output(
+                            raw_content, f"OpenRouter/{used_model}"
+                        )
                     except AIProviderError as exc:
                         errors.append(f"{model}: {exc}")
                         continue
-                    log.info("OpenRouter reply generated by allowed model %s", used_model)
+                    log.info(
+                        "OpenRouter reply generated by allowed model %s", used_model
+                    )
                     return answer
             except (aiohttp.ClientError, asyncio.TimeoutError) as exc:
                 errors.append(f"{model}: {type(exc).__name__}")
@@ -941,8 +1197,10 @@ async def _ask_openrouter(messages: list[dict[str, str]], max_tokens: int, tempe
     raise AIProviderError("OpenRouter safe models failed. " + " | ".join(errors[-4:]))
 
 
-async def _ask_groq(messages: list[dict[str, str]], max_tokens: int, temperature: float) -> str:
-    settings = get_settings()
+async def _ask_groq(
+    messages: list[dict[str, str]], max_tokens: int, temperature: float
+) -> str:
+    settings = provider_settings()
     headers = {
         "Authorization": f"Bearer {settings.groq_api_key}",
         "Content-Type": "application/json",
@@ -953,13 +1211,57 @@ async def _ask_groq(messages: list[dict[str, str]], max_tokens: int, temperature
         "max_completion_tokens": max_tokens,
         "temperature": temperature,
     }
-    async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=42)) as session:
-        async with session.post("https://api.groq.com/openai/v1/chat/completions", headers=headers, json=payload) as resp:
+    async with pooled_session() as session:
+        async with session.post(
+            "https://api.groq.com/openai/v1/chat/completions",
+            headers=headers,
+            json=payload,
+        ) as resp:
             data = await resp.json(content_type=None)
             if resp.status >= 400:
-                raise AIProviderError(f"Groq HTTP {resp.status}: {str(data)[:240]}")
+                raise AIProviderError(f"Groq HTTP {resp.status}")
             try:
                 raw_content = data["choices"][0]["message"].get("content")
             except Exception as exc:
-                raise AIProviderError(f"Groq malformed response: {str(data)[:240]}") from exc
+                raise AIProviderError("Groq malformed response") from exc
             return _clean_model_output(raw_content, "Groq")
+
+
+_model_selection: ContextVar[dict[str, str]] = ContextVar("provider_models", default={})
+
+
+def provider_settings():
+    choices = _model_selection.get()
+    settings = get_settings()
+    return replace(
+        settings,
+        gemini_model=choices.get("gemini") or settings.gemini_model,
+        groq_model=choices.get("groq") or settings.groq_model,
+        openrouter_model=choices.get("openrouter") or settings.openrouter_model,
+    )
+
+
+async def ask_ai(
+    config: dict[str, Any],
+    history: list[dict[str, str]],
+    user_text: str,
+    conversation_context: str | None = None,
+) -> tuple[str, str]:
+    ai = config.get("ai", {})
+    token = _model_selection.set(dict(ai.get("models") or {}))
+    try:
+        budget = max(4000, min(int(ai.get("maxPromptCharacters") or 24000), 100000))
+        text = str(user_text)[:4000]
+        retained: list[dict[str, str]] = []
+        used = len(text) + len(str(ai.get("personality") or ""))
+        for message in reversed(history[-36:]):
+            size = len(str(message.get("content") or ""))
+            if used + size > budget:
+                break
+            retained.insert(0, message)
+            used += size
+        context = str(conversation_context or "")[: max(0, budget - used)]
+        async with asyncio.timeout(50):
+            return await _ask_ai(config, retained, text, context)
+    finally:
+        _model_selection.reset(token)

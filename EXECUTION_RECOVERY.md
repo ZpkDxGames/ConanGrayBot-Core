@@ -1,0 +1,11 @@
+# Execution checkpoint — 2026-10-01
+
+Authoritative source is on revamp/v2 in both repositories, with draft PR #1 in each. Core commit 84cda52688a95daa3f2cf696709bf363116fb43e passed quality jobs on Python 3.11 and 3.12 (367 tests plus six subtests; 80.05% overall coverage; critical-module gates pass). Page commit 385d97bdcf2ff7c635b80426101cf767494ec785 passed push and PR CI, including 32 unit tests and six HTTPS production-mode browser scenarios with the real Core API and isolated identity/provider fixtures.
+
+Later local migration/aggregation additions passed 375 Core tests plus six subtests, 80.06% overall coverage, Ruff and mypy (49 files). The execution service then disconnected before final artifact checks and checkpointing. The migration and aggregation additions are reconstructed in this GitHub checkpoint for exact-commit CI validation; do not substitute earlier local observations for that validation.
+
+Completed source includes focused Discord runtime modules, typed API and generated Page contracts, live staff checks, revision-checked mutations, private media signing/ranges, bounded provider transport/prompts/retention, archive compensation, game/category/concurrency policy, responsive management forms, private migration dry-runs/backups and native Firestore archive aggregations. Latest documentation describes migration, audit failure behavior and production configuration.
+
+External gates remain: verified Firebase credential revocation/private replacement/IAM review; default-branch history remediation and cached sensitive-object removal; Vercel account/team authorization (403); private Discord OAuth configuration; Discloud runtime control and live Discord/Firebase/Drive/AI/weather/Page certification. Exact incident identifiers are in SECURITY.md. Core's full reachable-history scan correctly fails on the known historical credential. No waiver is applied.
+
+Automatic approval review rejected the previous forced main-history replacement as destructive and insufficiently explicitly authorized; it was not bypassed. No stable tags or GitHub Releases exist. Certification flags stay false until source, security, CI, integration and production-runtime gates are complete.
