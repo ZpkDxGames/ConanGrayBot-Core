@@ -37,7 +37,9 @@ def decode_json(raw: str) -> dict[str, Any] | None:
         return None
 
 
-def load_credential(path_name: str, json_name: str) -> tuple[dict[str, Any] | None, str]:
+def load_credential(
+    path_name: str, json_name: str
+) -> tuple[dict[str, Any] | None, str]:
     inline = value(json_name)
     if inline:
         return decode_json(inline), f"{json_name}"
@@ -73,14 +75,20 @@ firebase_payload, firebase_source = load_credential(
     "FIREBASE_SERVICE_ACCOUNT_JSON",
 )
 if not firebase_payload:
-    issues.append(f"Firebase credential could not be loaded from {firebase_source or 'configured environment values'}.")
+    issues.append(
+        f"Firebase credential could not be loaded from {firebase_source or 'configured environment values'}."
+    )
 else:
     for field in ("project_id", "client_email", "private_key"):
         if not firebase_payload.get(field):
             issues.append(f"Firebase credential JSON is missing {field}.")
     firebase_project = value("FIREBASE_PROJECT_ID")
     credential_project = str(firebase_payload.get("project_id") or "")
-    if firebase_project and credential_project and firebase_project != credential_project:
+    if (
+        firebase_project
+        and credential_project
+        and firebase_project != credential_project
+    ):
         issues.append(
             f"FIREBASE_PROJECT_ID ({firebase_project}) does not match Firebase credential project_id ({credential_project})."
         )
@@ -123,7 +131,9 @@ if auth_mode == "service_account":
         notes.append(
             f"Drive service-account mode uses project {active_project or 'unknown'} from {drive_source}."
         )
-        if firebase_payload and drive_payload.get("client_email") == firebase_payload.get("client_email"):
+        if firebase_payload and drive_payload.get(
+            "client_email"
+        ) == firebase_payload.get("client_email"):
             notes.append(
                 "Drive is explicitly using the Firebase service account. The Drive folder may belong to another "
                 "Google account, but Drive API must still be enabled in this service account's Cloud project."
@@ -134,17 +144,29 @@ else:
     oauth_refresh_token = value("GOOGLE_DRIVE_OAUTH_REFRESH_TOKEN")
     oauth_project = value("GOOGLE_DRIVE_OAUTH_PROJECT_ID")
     oauth_client_type = value("GOOGLE_DRIVE_OAUTH_CLIENT_TYPE").lower() or "desktop"
-    oauth_redirect_uri = value("GOOGLE_DRIVE_OAUTH_REDIRECT_URI") or "http://127.0.0.1:8765/"
+    oauth_redirect_uri = (
+        value("GOOGLE_DRIVE_OAUTH_REDIRECT_URI") or "http://127.0.0.1:8765/"
+    )
     if not oauth_client_id:
         issues.append("GOOGLE_DRIVE_OAUTH_CLIENT_ID is required for oauth_user mode.")
-    elif not re.fullmatch(r"\d+-[A-Za-z0-9_-]+\.apps\.googleusercontent\.com", oauth_client_id):
-        issues.append("GOOGLE_DRIVE_OAUTH_CLIENT_ID does not look like a Google OAuth client ID.")
+    elif not re.fullmatch(
+        r"\d+-[A-Za-z0-9_-]+\.apps\.googleusercontent\.com", oauth_client_id
+    ):
+        issues.append(
+            "GOOGLE_DRIVE_OAUTH_CLIENT_ID does not look like a Google OAuth client ID."
+        )
     if not oauth_client_secret:
-        issues.append("GOOGLE_DRIVE_OAUTH_CLIENT_SECRET is required for oauth_user mode. Use the Google-generated secret, not a custom password.")
+        issues.append(
+            "GOOGLE_DRIVE_OAUTH_CLIENT_SECRET is required for oauth_user mode. Use the Google-generated secret, not a custom password."
+        )
     elif len(oauth_client_secret) < 16:
-        issues.append("GOOGLE_DRIVE_OAUTH_CLIENT_SECRET does not look like a Google-generated OAuth client secret.")
+        issues.append(
+            "GOOGLE_DRIVE_OAUTH_CLIENT_SECRET does not look like a Google-generated OAuth client secret."
+        )
     if not oauth_refresh_token:
-        issues.append("GOOGLE_DRIVE_OAUTH_REFRESH_TOKEN is required for oauth_user mode.")
+        issues.append(
+            "GOOGLE_DRIVE_OAUTH_REFRESH_TOKEN is required for oauth_user mode."
+        )
     if not oauth_project:
         issues.append("GOOGLE_DRIVE_OAUTH_PROJECT_ID is required for oauth_user mode.")
     if oauth_client_type not in {"desktop", "web"}:
@@ -159,7 +181,9 @@ else:
         or parsed_redirect.query
         or parsed_redirect.fragment
     ):
-        issues.append("GOOGLE_DRIVE_OAUTH_REDIRECT_URI must be a fixed loopback URI such as http://127.0.0.1:8765/.")
+        issues.append(
+            "GOOGLE_DRIVE_OAUTH_REDIRECT_URI must be a fixed loopback URI such as http://127.0.0.1:8765/."
+        )
     if oauth_client_type == "web":
         notes.append(
             f"Web OAuth client mode requires this exact Authorized redirect URI in Google Cloud: {oauth_redirect_uri}"
@@ -176,9 +200,15 @@ else:
 client_id = value("GOOGLE_DRIVE_OAUTH_CLIENT_ID")
 oauth_project = value("GOOGLE_DRIVE_OAUTH_PROJECT_ID")
 if bool(client_id) != bool(oauth_project):
-    issues.append("Set both GOOGLE_DRIVE_OAUTH_CLIENT_ID and GOOGLE_DRIVE_OAUTH_PROJECT_ID, or leave both blank.")
-if client_id and not re.fullmatch(r"\d+-[A-Za-z0-9_-]+\.apps\.googleusercontent\.com", client_id):
-    issues.append("GOOGLE_DRIVE_OAUTH_CLIENT_ID does not look like a Google OAuth client ID.")
+    issues.append(
+        "Set both GOOGLE_DRIVE_OAUTH_CLIENT_ID and GOOGLE_DRIVE_OAUTH_PROJECT_ID, or leave both blank."
+    )
+if client_id and not re.fullmatch(
+    r"\d+-[A-Za-z0-9_-]+\.apps\.googleusercontent\.com", client_id
+):
+    issues.append(
+        "GOOGLE_DRIVE_OAUTH_CLIENT_ID does not look like a Google OAuth client ID."
+    )
 if auth_mode != "oauth_user" and client_id:
     notes.append(
         f"OAuth client metadata for project {oauth_project} is registered but inactive while auth mode is {auth_mode}."
@@ -187,25 +217,37 @@ if auth_mode != "oauth_user" and client_id:
 
 openweather_key = value("OPENWEATHER_API_KEY")
 if openweather_key and len(openweather_key) < 20:
-    issues.append("OPENWEATHER_API_KEY does not look like a complete OpenWeather API key.")
+    issues.append(
+        "OPENWEATHER_API_KEY does not look like a complete OpenWeather API key."
+    )
 if openweather_key:
-    notes.append("OpenWeather current conditions, geocoding, and 5-day forecast are configured.")
+    notes.append(
+        "OpenWeather current conditions, geocoding, and 5-day forecast are configured."
+    )
 
 public_base_url = value("PUBLIC_BASE_URL") or "https://conanbot.discloud.app"
 parsed_public_base = urlparse(public_base_url)
 if parsed_public_base.scheme != "https" or not parsed_public_base.netloc:
-    issues.append("PUBLIC_BASE_URL must be the public HTTPS origin of the backend, such as https://conanbot.discloud.app.")
+    issues.append(
+        "PUBLIC_BASE_URL must be the public HTTPS origin of the backend, such as https://conanbot.discloud.app."
+    )
 if not value("MEDIA_STREAM_SIGNING_KEY"):
-    notes.append("Large-media stream links use DASHBOARD_SESSION_KEY as their signing secret.")
+    notes.append(
+        "Large-media stream links use DASHBOARD_SESSION_KEY as their signing secret."
+    )
 
 if value("ENABLE_MESSAGE_CONTENT_INTENT").lower() not in {"1", "true", "yes", "on"}:
     issues.append("ENABLE_MESSAGE_CONTENT_INTENT must be true for reply-driven games.")
 
 openrouter_model_values = [value("OPENROUTER_MODEL")]
-openrouter_model_values.extend(item.strip() for item in value("OPENROUTER_MODELS").split(",") if item.strip())
+openrouter_model_values.extend(
+    item.strip() for item in value("OPENROUTER_MODELS").split(",") if item.strip()
+)
 blocked_openrouter_parts = {
     item.strip().lower()
-    for item in (value("OPENROUTER_BLOCKED_MODEL_FRAGMENTS") or "qwen,nvidia,nemotron").split(",")
+    for item in (
+        value("OPENROUTER_BLOCKED_MODEL_FRAGMENTS") or "qwen,nvidia,nemotron"
+    ).split(",")
     if item.strip()
 }
 for model_id in openrouter_model_values:
@@ -230,6 +272,8 @@ if issues:
         print(f"- {issue}")
     raise SystemExit(1)
 
-print(f"Environment check passed. Active Drive auth mode: {auth_mode}; active project: {active_project or 'unknown'}.")
+print(
+    f"Environment check passed. Active Drive auth mode: {auth_mode}; active project: {active_project or 'unknown'}."
+)
 for note in notes:
     print(f"- {note}")

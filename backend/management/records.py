@@ -1,36 +1,53 @@
 import logging
 from typing import Any
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 
 from ..google_drive import DriveConfigurationError
-from . import runtime
+from ..media_stream import build_drive_stream_url
+from ..pagination import record_page
+from . import models, runtime
 from .auth import require_staff
 
 log = logging.getLogger("conan.management")
 router = APIRouter()
 
 
-@router.get("/api/v1/media/{guild_id}")
+@router.get("/api/v1/media/{guild_id}", response_model=models.RecordsPage)
 async def get_media(
     guild_id: str,
-    limit: int = 100,
-    media_type: str = "",
-    channel_id: str = "",
+    limit: int = Query(default=50, ge=1, le=100),
+    cursor: str = Query(default="", max_length=128),
+    search: str = Query(default="", max_length=100),
+    media_type: str = Query(default="", pattern="^(image|video)?$"),
+    channel_id: str = Query(default="", pattern=r"^\d*$", max_length=20),
     _: None = Depends(require_staff),
 ) -> dict[str, Any]:
-    normalized_type = media_type if media_type in {"image", "video"} else ""
-    records = await runtime.store.list_media_records(
-        guild_id,
-        limit=max(1, min(limit, 250)),
-        media_type=normalized_type,
-        channel_id=str(channel_id or ""),
-    )
+    try:
+        records, next_cursor = await record_page(
+            runtime.store,
+            guild_id,
+            "media",
+            limit=limit,
+            cursor=cursor,
+            search=search,
+            media_type=media_type,
+            channel_id=channel_id,
+        )
+    except ValueError:
+        raise HTTPException(400, "Invalid record cursor") from None
     config = await runtime.store.get_config(guild_id)
     media_config = config.get("media", {})
+    if runtime.settings.media_stream_signing_key:
+        for row in records:
+            if row.get("driveFileId") and row.get("mediaType") in {"image", "video"}:
+                row["previewUrl"] = build_drive_stream_url(
+                    str(row["driveFileId"]), str(row.get("name") or "media")
+                )
     return {
         "guildId": guild_id,
         "items": records,
+        "nextCursor": next_cursor,
         "stats": await runtime.store.media_stats(guild_id),
         "drive": runtime.drive_archive.status_payload(
             folder_id=str(media_config.get("googleDriveFolderId") or "")
@@ -38,7 +55,9 @@ async def get_media(
     }
 
 
-@router.post("/api/v1/media/{guild_id}/test-drive")
+@router.post(
+    "/api/v1/media/{guild_id}/test-drive", response_model=models.DriveTestResult
+)
 async def test_media_drive(
     guild_id: str, _: None = Depends(require_staff)
 ) -> dict[str, Any]:
@@ -84,7 +103,9 @@ async def test_media_drive(
     }
 
 
-@router.delete("/api/v1/media/{guild_id}/{record_id}")
+@router.delete(
+    "/api/v1/media/{guild_id}/{record_id}", response_model=models.MediaDeleteResult
+)
 async def delete_media(
     guild_id: str,
     record_id: str,
@@ -117,11 +138,18 @@ async def delete_media(
     return {"ok": True, "record": removed, "driveFileDeleted": bool(delete_drive_file)}
 
 
-@router.get("/api/v1/logs/{guild_id}")
+@router.get("/api/v1/logs/{guild_id}", response_model=models.RecordsPage)
 async def get_logs(
-    guild_id: str, limit: int = 80, _: None = Depends(require_staff)
+    guild_id: str,
+    limit: int = Query(default=50, ge=1, le=100),
+    cursor: str = Query(default="", max_length=128),
+    search: str = Query(default="", max_length=100),
+    _: None = Depends(require_staff),
 ) -> dict[str, Any]:
-    return {
-        "guildId": guild_id,
-        "logs": await runtime.store.list_logs(guild_id, limit=limit),
-    }
+    try:
+        rows, next_cursor = await record_page(
+            runtime.store, guild_id, "logs", limit=limit, cursor=cursor, search=search
+        )
+    except ValueError:
+        raise HTTPException(400, "Invalid record cursor") from None
+    return {"guildId": guild_id, "items": rows, "nextCursor": next_cursor}

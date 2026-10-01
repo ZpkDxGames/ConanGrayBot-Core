@@ -9,7 +9,16 @@ from fastapi.responses import JSONResponse
 
 from .http import close_sessions
 from .logging import configure_logging
-from .management import admin, configuration, discord, records, runtime, stream
+from .management import (
+    admin,
+    configuration,
+    discord,
+    models,
+    records,
+    runtime,
+    sandbox,
+    stream,
+)
 from .management.auth import require_staff
 from .migrations import RevisionConflict
 from .providers import manager
@@ -30,13 +39,22 @@ async def lifespan(app):
         await close_sessions()
 
 
-app = FastAPI(title="ConanGrayBot Core", version=VERSION, lifespan=lifespan)
+app = FastAPI(
+    title="ConanGrayBot Core",
+    version=VERSION,
+    lifespan=lifespan,
+    responses={
+        code: {"model": models.ErrorEnvelope}
+        for code in [400, 401, 403, 404, 409, 413, 422, 429, 500, 502, 503]
+    },
+)
 for router in (
     configuration.router,
     admin.router,
     discord.router,
     records.router,
     stream.router,
+    sandbox.router,
 ):
     app.include_router(router)
 
@@ -118,28 +136,29 @@ async def conflict(request, exc):
     )
 
 
-@app.get("/health/live")
+@app.get("/", response_model=models.Live, include_in_schema=False)
+@app.get("/health/live", response_model=models.Live)
 async def live():
     return {"ok": True, "version": VERSION}
 
 
-@app.get("/health/ready")
+@app.get("/health/ready", response_model=models.Ready)
 async def ready():
     online = bool(runtime.discord_bot and runtime.discord_bot.is_ready())
     return JSONResponse({"ok": online}, status_code=200 if online else 503)
 
 
-@app.get("/api/v1/auth/check")
+@app.get("/api/v1/auth/check", response_model=models.AuthCheck)
 async def auth_check(actor: str = Depends(require_staff)):
     return {"allowed": True, "actorId": actor, "guildId": runtime.settings.guild_id}
 
 
-@app.get("/api/v1/compatibility")
+@app.get("/api/v1/compatibility", response_model=models.Compatibility)
 async def compatibility(actor: str = Depends(require_staff)):
     return {"coreVersion": VERSION, "apiVersion": "v1", "schemaVersion": 4}
 
 
-@app.get("/api/v1/diagnostics")
+@app.get("/api/v1/diagnostics", response_model=models.Diagnostics)
 async def diagnostics(actor: str = Depends(require_staff)):
     bot = runtime.discord_bot
     return {

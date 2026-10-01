@@ -1,16 +1,16 @@
 import logging
 from typing import Any
 
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException
 
-from . import runtime
+from . import models, runtime
 from .auth import require_staff
 
 log = logging.getLogger("conan.management")
 router = APIRouter()
 
 
-@router.get("/api/v1/admin/{guild_id}/status")
+@router.get("/api/v1/admin/{guild_id}/status", response_model=models.AdminStatus)
 async def admin_status(
     guild_id: str, _: None = Depends(require_staff)
 ) -> dict[str, Any]:
@@ -40,7 +40,9 @@ async def admin_status(
     }
 
 
-@router.post("/api/v1/admin/{guild_id}/bot/{action}")
+@router.post(
+    "/api/v1/admin/{guild_id}/bot/{action}", response_model=models.BotActionResult
+)
 async def bot_action(
     guild_id: str, action: str, _: None = Depends(require_staff)
 ) -> dict[str, Any]:
@@ -56,13 +58,14 @@ async def bot_action(
     raise HTTPException(status_code=404, detail="Unknown bot action")
 
 
-@router.post("/api/v1/admin/{guild_id}/memory/clear")
+@router.post(
+    "/api/v1/admin/{guild_id}/memory/clear", response_model=models.MemoryClearResult
+)
 async def clear_memory(
-    guild_id: str, request: Request, _: None = Depends(require_staff)
+    guild_id: str, payload: models.MemoryClearRequest, _: None = Depends(require_staff)
 ) -> dict[str, Any]:
-    payload = await request.json()
-    all_channels = bool(payload.get("allChannels"))
-    channel_id = str(payload.get("channelId") or "").strip()
+    all_channels = payload.allChannels
+    channel_id = payload.channelId
     if all_channels:
         cleared = await runtime.store.clear_guild_sessions(guild_id)
         await runtime.store.add_log(
@@ -90,7 +93,9 @@ async def clear_memory(
     return {"ok": True, "scope": "channel", "channelId": channel_id}
 
 
-@router.post("/api/v1/admin/{guild_id}/ai/{action}")
+@router.post(
+    "/api/v1/admin/{guild_id}/ai/{action}", response_model=models.AIActionResult
+)
 async def ai_action(
     guild_id: str, action: str, _: None = Depends(require_staff)
 ) -> dict[str, Any]:

@@ -5,14 +5,14 @@ import discord
 from fastapi import APIRouter, Depends, HTTPException
 
 from ..bot import command_catalog
-from . import runtime
+from . import models, runtime
 from .auth import require_staff
 
 log = logging.getLogger("conan.management")
 router = APIRouter()
 
 
-@router.get("/api/v1/discord/{guild_id}/channels")
+@router.get("/api/v1/discord/{guild_id}/channels", response_model=models.ChannelCatalog)
 async def get_channels(
     guild_id: str, _: None = Depends(require_staff)
 ) -> dict[str, Any]:
@@ -114,7 +114,7 @@ async def get_channels(
     }
 
 
-@router.get("/api/v1/discord/{guild_id}/commands")
+@router.get("/api/v1/discord/{guild_id}/commands", response_model=models.CommandCatalog)
 async def get_command_setup(
     guild_id: str, _: None = Depends(require_staff)
 ) -> dict[str, Any]:
@@ -130,6 +130,7 @@ async def get_command_setup(
     return {
         "guildId": guild_id,
         "commands": rows,
+        "manifestHash": await runtime.store.get_command_manifest(guild_id),
         "syncStatus": runtime.discord_bot.command_sync_status
         if runtime.discord_bot
         else "offline",
@@ -139,7 +140,9 @@ async def get_command_setup(
     }
 
 
-@router.post("/api/v1/discord/{guild_id}/sync-commands")
+@router.post(
+    "/api/v1/discord/{guild_id}/sync-commands", response_model=models.CommandSyncResult
+)
 async def sync_commands(
     guild_id: str, _: None = Depends(require_staff)
 ) -> dict[str, Any]:

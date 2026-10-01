@@ -48,13 +48,19 @@ def validate_google_client_secret(secret: str) -> None:
 def parse_loopback_redirect(uri: str) -> tuple[str, int, bool]:
     parsed = urlparse(uri)
     if parsed.scheme != "http":
-        raise SystemExit("OAuth redirect URI must use http for the local loopback helper.")
+        raise SystemExit(
+            "OAuth redirect URI must use http for the local loopback helper."
+        )
     if parsed.hostname not in {"127.0.0.1", "localhost"}:
         raise SystemExit("OAuth redirect URI must use 127.0.0.1 or localhost.")
     if parsed.port is None:
-        raise SystemExit("OAuth redirect URI must include a fixed port, for example http://127.0.0.1:8765/.")
+        raise SystemExit(
+            "OAuth redirect URI must include a fixed port, for example http://127.0.0.1:8765/."
+        )
     if parsed.path not in {"", "/"} or parsed.params or parsed.query or parsed.fragment:
-        raise SystemExit("OAuth redirect URI must point to the loopback root path, for example http://127.0.0.1:8765/.")
+        raise SystemExit(
+            "OAuth redirect URI must point to the loopback root path, for example http://127.0.0.1:8765/."
+        )
     return parsed.hostname, parsed.port, uri.endswith("/")
 
 
@@ -68,7 +74,9 @@ def load_downloaded_client(path: Path) -> tuple[str, dict[str, object]]:
         return "desktop", payload["installed"]
     if isinstance(payload.get("web"), dict):
         return "web", payload["web"]
-    raise SystemExit("OAuth client JSON must contain either an 'installed' or 'web' section.")
+    raise SystemExit(
+        "OAuth client JSON must contain either an 'installed' or 'web' section."
+    )
 
 
 def build_client_config(
@@ -82,15 +90,29 @@ def build_client_config(
         client_id = str(section.get("client_id") or "").strip()
         client_secret = str(section.get("client_secret") or "").strip()
         project_id = str(section.get("project_id") or "").strip()
-        registered_redirects = [str(item) for item in section.get("redirect_uris", []) if item]
+        registered_redirects = [
+            str(item) for item in section.get("redirect_uris", []) if item
+        ]
     else:
-        raw_type = str(values.get("GOOGLE_DRIVE_OAUTH_CLIENT_TYPE") or "desktop").strip().lower()
-        aliases = {"installed": "desktop", "desktop_app": "desktop", "web_application": "web"}
+        raw_type = (
+            str(values.get("GOOGLE_DRIVE_OAUTH_CLIENT_TYPE") or "desktop")
+            .strip()
+            .lower()
+        )
+        aliases = {
+            "installed": "desktop",
+            "desktop_app": "desktop",
+            "web_application": "web",
+        }
         client_type = aliases.get(raw_type, raw_type)
         if client_type not in {"desktop", "web"}:
-            raise SystemExit("GOOGLE_DRIVE_OAUTH_CLIENT_TYPE must be 'desktop' or 'web'.")
+            raise SystemExit(
+                "GOOGLE_DRIVE_OAUTH_CLIENT_TYPE must be 'desktop' or 'web'."
+            )
         client_id = str(values.get("GOOGLE_DRIVE_OAUTH_CLIENT_ID") or "").strip()
-        client_secret = str(values.get("GOOGLE_DRIVE_OAUTH_CLIENT_SECRET") or "").strip()
+        client_secret = str(
+            values.get("GOOGLE_DRIVE_OAUTH_CLIENT_SECRET") or ""
+        ).strip()
         project_id = str(values.get("GOOGLE_DRIVE_OAUTH_PROJECT_ID") or "").strip()
         registered_redirects = []
 
@@ -115,7 +137,11 @@ def build_client_config(
     )
     parse_loopback_redirect(redirect_uri)
 
-    if client_type == "web" and registered_redirects and redirect_uri not in registered_redirects:
+    if (
+        client_type == "web"
+        and registered_redirects
+        and redirect_uri not in registered_redirects
+    ):
         raise SystemExit(
             "The downloaded Web application OAuth client does not authorize the helper redirect URI. "
             f"Add this exact URI under Authorized redirect URIs, download the JSON again, and retry: {redirect_uri}"
@@ -132,7 +158,14 @@ def build_client_config(
             "redirect_uris": registered_redirects or [redirect_uri],
         }
     }
-    return client_config, client_type, client_id, client_secret, project_id, redirect_uri
+    return (
+        client_config,
+        client_type,
+        client_id,
+        client_secret,
+        project_id,
+        redirect_uri,
+    )
 
 
 def main() -> None:
@@ -161,10 +194,12 @@ def main() -> None:
     args = parser.parse_args()
 
     values = dict(dotenv_values(ENV_PATH))
-    client_config, client_type, client_id, client_secret, project_id, redirect_uri = build_client_config(
-        values,
-        client_secrets_path=args.client_secrets,
-        redirect_override=args.redirect_uri,
+    client_config, client_type, client_id, client_secret, project_id, redirect_uri = (
+        build_client_config(
+            values,
+            client_secrets_path=args.client_secrets,
+            redirect_override=args.redirect_uri,
+        )
     )
     host, port, trailing_slash = parse_loopback_redirect(redirect_uri)
 
@@ -173,7 +208,9 @@ def main() -> None:
         print("Google Cloud must list this exact Authorized redirect URI:")
         print(redirect_uri)
     else:
-        print("This OAuth client is a Desktop app. Google accepts its local loopback redirect automatically.")
+        print(
+            "This OAuth client is a Desktop app. Google accepts its local loopback redirect automatically."
+        )
 
     flow = InstalledAppFlow.from_client_config(client_config, scopes=SCOPES)
     try:
@@ -202,7 +239,9 @@ def main() -> None:
         )
 
     if args.no_write:
-        print("Authorization succeeded. Re-run without --no-write to save the refresh token into .env.")
+        print(
+            "Authorization succeeded. Re-run without --no-write to save the refresh token into .env."
+        )
         return
 
     backup = ROOT / ".env.before-drive-oauth"
@@ -224,7 +263,9 @@ def main() -> None:
     )
     print("Google Drive OAuth is now active in the private .env.")
     print("Run: python scripts/validate_env.py")
-    print("Then copy the updated private .env values to Discloud and restart the application.")
+    print(
+        "Then copy the updated private .env values to Discloud and restart the application."
+    )
     print("The refresh token was not printed to the terminal.")
 
 

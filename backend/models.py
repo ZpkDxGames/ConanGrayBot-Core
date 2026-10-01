@@ -69,9 +69,9 @@ class BotConfigAi(StrictModel):
     )
     talkinGroupMode: bool = Field(default=True)
     talkinPlainReplies: bool = Field(default=True)
-    talkinActivationMode: Literal["direct_calls", "channel", "all_messages"] = Field(
-        default="direct_calls"
-    )
+    talkinActivationMode: Literal[
+        "direct_calls", "direct_calls_and_questions", "all_messages"
+    ] = Field(default="direct_calls")
     talkinWakeWords: list[str] = Field(
         default_factory=lambda: ["conan", "conan gray"], max_length=1000
     )
